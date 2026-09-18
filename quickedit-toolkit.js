@@ -1,0 +1,1236 @@
+// @toolkit-version 7.0
+// GATE Overflow Quickedit Toolkit — Remote Payload
+// Fetched & executed by the Loader userscript. Not meant to be installed directly in Tampermonkey.
+
+(function () {
+    'use strict';
+
+    /* ============================================================
+       STATE
+    ============================================================ */
+    const state = {
+        original: [],
+        working: [],
+        history: [],
+        itemStatus: {},          // idx -> 'success' | 'failed'  (absent = not yet attempted)
+        lockNonFailed: false,
+        isRunning: false,
+        isPaused: false,
+        stopRequested: false,
+        consecutiveFailures: 0,
+        consecutiveAuthFailures: 0,
+        minDelay: 10,
+        maxDelay: 15,
+    };
+
+    /* ============================================================
+       STYLES
+    ============================================================ */
+    const STYLE = `
+    :root {
+        --qa-blue: #0071e3;
+        --qa-blue-hover: #0077ed;
+        --qa-green: #34c759;
+        --qa-green-hover: #2fb350;
+        --qa-yellow: #ff9f0a;
+        --qa-red: #ff3b30;
+        --qa-bg: #ffffff;
+        --qa-bg-secondary: #f5f5f7;
+        --qa-text: #1d1d1f;
+        --qa-text-secondary: #6e6e73;
+        --qa-border: #d2d2d7;
+        --qa-radius: 14px;
+        --qa-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+    }
+
+    body.qa-modal-open > *:not(#qa-modal-overlay) { display: none !important; }
+
+    #qa-tag-search {
+        display: block; margin-bottom: 6px; padding: 6px 10px; width: 250px;
+        font-size: 14px; box-sizing: border-box; border: 1px solid var(--qa-border);
+        border-radius: 8px; font-family: var(--qa-font);
+    }
+    #qa-tag-search:focus {
+        outline: none; border-color: var(--qa-blue);
+        box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
+    }
+
+    #qa-extract-fab {
+        position: fixed; bottom: 28px; right: 28px; z-index: 999998;
+        background: var(--qa-blue); color: #fff; border: none; border-radius: 980px;
+        padding: 14px 22px; font-size: 15px; font-weight: 600; font-family: var(--qa-font);
+        box-shadow: 0 4px 14px rgba(0,0,0,0.18); cursor: pointer; transition: all 0.2s ease;
+    }
+    #qa-extract-fab:hover:not(:disabled) {
+        background: var(--qa-blue-hover); transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(0,0,0,0.22);
+    }
+    #qa-extract-fab:disabled { background: #c7c7cc; cursor: not-allowed; box-shadow: none; }
+
+    #qa-modal-overlay {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+        backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+        z-index: 999999; display: flex; align-items: center; justify-content: center;
+        opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+        font-family: var(--qa-font);
+    }
+    #qa-modal-overlay.qa-visible { opacity: 1; pointer-events: all; }
+
+    #qa-modal {
+        background: var(--qa-bg); width: min(1000px, 94vw); height: min(800px, 90vh);
+        border-radius: var(--qa-radius); box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        display: flex; flex-direction: column; overflow: hidden;
+        transform: scale(0.94) translateY(10px);
+        transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); position: relative;
+    }
+    #qa-modal-overlay.qa-visible #qa-modal { transform: scale(1) translateY(0); }
+
+    #qa-modal-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 16px 22px; border-bottom: 1px solid var(--qa-border);
+        background: var(--qa-bg-secondary); flex-shrink: 0;
+    }
+    #qa-modal-header h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--qa-text); }
+    #qa-modal-close {
+        width: 30px; height: 30px; border-radius: 50%; border: none;
+        background: #e8e8ed; color: var(--qa-text-secondary); font-size: 16px;
+        cursor: pointer; display: flex; align-items: center; justify-content: center;
+        transition: background 0.15s ease;
+    }
+    #qa-modal-close:hover { background: #d8d8dd; }
+
+    #qa-tabs { display: flex; gap: 6px; padding: 10px 22px 0; background: var(--qa-bg-secondary); flex-shrink: 0; }
+    .qa-tab-btn {
+        border: none; background: transparent; padding: 8px 16px; font-size: 14px; font-weight: 500;
+        color: var(--qa-text-secondary); cursor: pointer; border-radius: 8px 8px 0 0; transition: color 0.15s ease;
+    }
+    .qa-tab-btn.qa-active { color: var(--qa-blue); background: var(--qa-bg); }
+
+    #qa-toolbar {
+        display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+        padding: 12px 22px; background: var(--qa-bg-secondary);
+        border-bottom: 1px solid var(--qa-border); flex-shrink: 0;
+    }
+    #qa-toolbar.qa-hidden { display: none; }
+    .qa-toolbar-group {
+        display: flex; align-items: flex-end; gap: 6px; flex-wrap: wrap;
+        background: var(--qa-bg); border: 1px solid var(--qa-border);
+        border-radius: 10px; padding: 8px 10px;
+    }
+    .qa-field-stack { display: flex; flex-direction: column; gap: 3px; }
+    .qa-field-stack label {
+        font-size: 10.5px; color: var(--qa-text-secondary); font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.02em;
+    }
+    .qa-toolbar input[type="text"], .qa-toolbar input[type="number"], .qa-toolbar select {
+        border: 1px solid var(--qa-border); border-radius: 6px; padding: 5px 8px;
+        font-size: 13px; font-family: var(--qa-font);
+    }
+    .qa-toolbar input[type="number"] { width: 60px; }
+    .qa-toolbar input[type="text"] { width: 140px; }
+    .qa-btn-sm {
+        border: none; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600;
+        cursor: pointer; color: #fff; background: var(--qa-blue); transition: background 0.15s ease; height: 30px;
+    }
+    .qa-btn-sm:hover { background: var(--qa-blue-hover); }
+    .qa-btn-sm.qa-secondary { background: #8e8e93; }
+    .qa-btn-sm.qa-secondary:hover { background: #77777c; }
+    .qa-btn-sm.qa-danger { background: var(--qa-red); }
+    .qa-btn-sm.qa-danger:hover { background: #e0342b; }
+    .qa-checkbox-wrap { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--qa-text-secondary); height: 30px; }
+    #qa-toolbar-right { margin-left: auto; display: flex; gap: 8px; align-self: flex-end; }
+
+    #qa-modal-body { flex: 1; overflow: auto; padding: 20px 22px; background: var(--qa-bg); position: relative; }
+    .qa-tab-panel { display: none; height: 100%; }
+    .qa-tab-panel.qa-active { display: flex; flex-direction: column; }
+
+    /* Lock/status bar */
+    .qa-lock-bar {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        background: #fff8e6; border: 1px solid #ffe1a8; color: #7a5200;
+        border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; flex-shrink: 0;
+    }
+    .qa-lock-bar.qa-hidden { display: none; }
+    .qa-lock-bar-text strong { font-weight: 700; }
+
+    /* Cards */
+    .qa-card-list { display: flex; flex-direction: column; gap: 10px; }
+    .qa-card {
+        border: 1px solid var(--qa-border); border-radius: 12px; padding: 14px 16px;
+        transition: box-shadow 0.15s ease, background 0.3s ease;
+        background: var(--qa-bg-secondary); position: relative;
+    }
+    .qa-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+    .qa-card.qa-flash { background: #fff6d8; }
+    .qa-card.qa-card-failed { background: #fff3f2; border-color: #ffc7c2; }
+    .qa-card.qa-card-locked { background: #f2f2f4; }
+    .qa-card.qa-card-locked .qa-edit-input {
+        background: #e9e9ec; color: #9a9a9e; cursor: not-allowed;
+    }
+    .qa-card.qa-card-locked .qa-edit-input:hover { background: #e9e9ec; border-color: transparent; }
+
+    .qa-card-meta { position: absolute; top: 10px; right: 14px; display: flex; align-items: center; gap: 6px; }
+    .qa-card-index { font-size: 11px; color: var(--qa-text-secondary); font-weight: 600; }
+    .qa-status-badge {
+        font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+        text-transform: uppercase; letter-spacing: 0.02em;
+    }
+    .qa-status-badge.qa-status-failed { background: #ffdcda; color: #c22b22; }
+    .qa-status-badge.qa-status-locked { background: #e4e4e8; color: #6e6e73; }
+
+    .qa-card-row { display: flex; gap: 10px; margin-bottom: 8px; font-size: 13.5px; align-items: flex-start; }
+    .qa-card-row:last-child { margin-bottom: 0; }
+    .qa-card-label { color: var(--qa-text-secondary); min-width: 70px; font-weight: 500; padding-top: 6px; }
+    .qa-card-value { color: var(--qa-text); word-break: break-word; flex: 1; }
+    .qa-card-static { padding-top: 6px; }
+
+    .qa-edit-input {
+        width: 100%; box-sizing: border-box; border: 1px solid transparent;
+        border-radius: 8px; padding: 6px 8px; font-size: 13.5px; font-family: var(--qa-font);
+        background: transparent; color: var(--qa-text); transition: all 0.15s ease;
+    }
+    .qa-edit-input:hover { background: var(--qa-bg); border-color: var(--qa-border); }
+    .qa-edit-input:focus {
+        outline: none; background: var(--qa-bg); border-color: var(--qa-blue);
+        box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
+    }
+
+    .qa-tag-chip {
+        display: inline-block; background: #e8f0fe; color: var(--qa-blue);
+        border-radius: 5px; padding: 1px 7px; font-size: 11px; margin: 2px 3px 0 0; font-weight: 500;
+    }
+    .qa-chip-preview { margin-top: 4px; }
+
+    #qa-modal-footer {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 14px 22px; border-top: 1px solid var(--qa-border);
+        background: var(--qa-bg-secondary); flex-shrink: 0;
+    }
+    #qa-record-count { font-size: 13px; color: var(--qa-text-secondary); }
+    #qa-copy-btn {
+        background: var(--qa-blue); color: #fff; border: none; border-radius: 980px;
+        padding: 9px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s ease;
+    }
+    #qa-copy-btn:hover { background: var(--qa-blue-hover); }
+    #qa-copy-btn.qa-copied { background: var(--qa-green); }
+
+    #qa-toast {
+        position: absolute; top: 14px; left: 50%; transform: translate(-50%, -20px);
+        background: #1d1d1f; color: #fff; padding: 10px 18px; border-radius: 980px;
+        font-size: 13px; font-weight: 500; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        opacity: 0; pointer-events: none; transition: all 0.25s ease; z-index: 10;
+        max-width: 80%; text-align: center;
+    }
+    #qa-toast.qa-show { opacity: 1; transform: translate(-50%, 0); }
+
+    #qa-run-panel { display: flex; flex-direction: column; height: 100%; gap: 14px; min-height: 0; }
+    .qa-run-config {
+        display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+        background: var(--qa-bg-secondary); border: 1px solid var(--qa-border);
+        border-radius: 12px; padding: 14px 16px; flex-shrink: 0;
+    }
+    .qa-run-field { display: flex; flex-direction: column; gap: 4px; }
+    .qa-run-field label { font-size: 12px; color: var(--qa-text-secondary); font-weight: 500; }
+    .qa-run-field input {
+        border: 1px solid var(--qa-border); border-radius: 8px; padding: 7px 10px;
+        font-size: 13px; width: 90px; font-family: var(--qa-font);
+    }
+    .qa-run-buttons { display: flex; gap: 8px; margin-left: auto; }
+    .qa-btn {
+        border: none; border-radius: 980px; padding: 9px 20px; font-size: 14px;
+        font-weight: 600; cursor: pointer; color: #fff; transition: all 0.15s ease;
+    }
+    .qa-btn:disabled { background: #c7c7cc !important; cursor: not-allowed; }
+    .qa-btn-start { background: var(--qa-green); }
+    .qa-btn-start:hover:not(:disabled) { background: var(--qa-green-hover); }
+    .qa-btn-pause { background: var(--qa-yellow); }
+    .qa-btn-pause:hover:not(:disabled) { background: #e69009; }
+    .qa-btn-stop { background: var(--qa-red); }
+    .qa-btn-stop:hover:not(:disabled) { background: #e0342b; }
+
+    .qa-progress-wrap { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+    .qa-progress-track { width: 100%; height: 6px; background: #e8e8ed; border-radius: 999px; overflow: hidden; }
+    .qa-progress-fill {
+        height: 100%; width: 0%; border-radius: 999px;
+        background: linear-gradient(90deg, var(--qa-blue), #5ac8fa);
+        transition: width 0.4s cubic-bezier(0.2,0.8,0.2,1);
+        background-size: 200% 100%; animation: qa-shimmer 2s linear infinite;
+    }
+    @keyframes qa-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .qa-progress-meta { display: flex; justify-content: space-between; font-size: 13px; color: var(--qa-text-secondary); }
+
+    .qa-stat-row { display: flex; gap: 10px; flex-shrink: 0; }
+    .qa-stat-chip {
+        flex: 1; text-align: center; border-radius: 10px; padding: 10px;
+        background: var(--qa-bg-secondary); border: 1px solid var(--qa-border);
+    }
+    .qa-stat-chip .qa-stat-num { font-size: 20px; font-weight: 700; color: var(--qa-text); display: block; }
+    .qa-stat-chip .qa-stat-label { font-size: 11.5px; color: var(--qa-text-secondary); }
+    .qa-stat-chip.qa-success .qa-stat-num { color: var(--qa-green); }
+    .qa-stat-chip.qa-failed .qa-stat-num { color: var(--qa-red); }
+
+    .qa-run-banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; font-size: 13.5px; flex-shrink: 0; }
+    .qa-run-banner.qa-hidden { display: none; }
+    .qa-banner-icon { font-size: 18px; flex-shrink: 0; }
+    .qa-banner-text { flex: 1; line-height: 1.4; }
+    .qa-banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .qa-banner-auth, .qa-banner-generic { background: #fdecea; border: 1px solid #f5c2c0; color: #86201b; }
+    .qa-banner-success { background: #e7f8ec; border: 1px solid #b7ebc6; color: #166534; }
+
+    #qa-run-views { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .qa-run-view { display: none; flex: 1; overflow-y: auto; }
+    .qa-run-view.qa-active { display: block; }
+
+    #qa-simple-feed { padding-right: 2px; }
+    .qa-feed-card {
+        border: 1px solid var(--qa-border); border-radius: 10px; padding: 8px 12px;
+        margin-bottom: 6px; background: var(--qa-bg-secondary);
+    }
+    .qa-feed-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+    .qa-feed-num { font-size: 11px; font-weight: 700; color: var(--qa-text-secondary); }
+    .qa-feed-postid { font-size: 11px; color: var(--qa-text-secondary); }
+    .qa-feed-overall { margin-left: auto; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+    .qa-feed-overall.qa-ok { background: #d3f5df; color: #0a7d33; }
+    .qa-feed-overall.qa-fail { background: #ffe3b3; color: #8a5a00; }
+    .qa-feed-body { display: flex; flex-direction: column; gap: 5px; }
+    .qa-feed-item { display: flex; gap: 8px; align-items: flex-start; }
+    .qa-feed-icon { font-size: 12.5px; line-height: 1.4; flex-shrink: 0; }
+    .qa-feed-text { flex: 1; min-width: 0; }
+    .qa-feed-title-text { font-size: 12.5px; color: var(--qa-text); font-weight: 500; word-break: break-word; line-height: 1.35; }
+    .qa-feed-tags { margin-bottom: 1px; line-height: 1.2; }
+    .qa-feed-sub { font-size: 11px; color: var(--qa-text-secondary); margin-top: 1px; }
+    .qa-feed-sub-error { color: var(--qa-red); font-weight: 600; }
+
+    #qa-log-console {
+        background: #1d1d1f; color: #d1d1d6; border-radius: 12px; padding: 12px 14px;
+        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.7;
+        height: 100%; box-sizing: border-box;
+    }
+    .qa-log-line { white-space: pre-wrap; word-break: break-word; }
+    .qa-log-info { color: #8e8e93; }
+    .qa-log-success { color: #32d74b; }
+    .qa-log-error { color: #ff453a; }
+    .qa-log-warn { color: #ffd60a; }
+    .qa-log-done { color: #64d2ff; font-weight: 700; }
+    `;
+
+    function injectStyle() {
+        const style = document.createElement('style');
+        style.textContent = STYLE;
+        document.head.appendChild(style);
+    }
+
+    /* ============================================================
+       UTILITIES
+    ============================================================ */
+    function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+    function randomBetween(min, max) { return Math.random() * (max - min) + min; }
+    function escapeHtml(str) {
+        if (str == null) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+    async function interruptibleSleep(ms) {
+        const step = 200;
+        let elapsed = 0;
+        while (elapsed < ms) {
+            if (state.stopRequested) return;
+            while (state.isPaused) {
+                await sleep(200);
+                if (state.stopRequested) return;
+            }
+            const chunk = Math.min(step, ms - elapsed);
+            await sleep(chunk);
+            elapsed += chunk;
+        }
+    }
+
+    function computeStats() {
+        const total = state.working.length;
+        let success = 0, failed = 0;
+        for (let i = 0; i < total; i++) {
+            if (state.itemStatus[i] === 'success') success++;
+            else if (state.itemStatus[i] === 'failed') failed++;
+        }
+        return { total, success, failed, remaining: total - success - failed };
+    }
+
+    /* ============================================================
+       TAG SEARCH (on the quickedit page itself)
+    ============================================================ */
+    function initTagSearch() {
+        const select = document.getElementById('tag_selector');
+        if (!select) return;
+
+        const searchBox = document.createElement('input');
+        searchBox.type = 'text';
+        searchBox.id = 'qa-tag-search';
+        searchBox.placeholder = 'Search tags...';
+        select.parentNode.insertBefore(searchBox, select);
+
+        const options = Array.from(select.options);
+
+        searchBox.addEventListener('input', function () {
+            const query = this.value.trim().toLowerCase();
+            options.forEach(opt => {
+                opt.style.display = opt.textContent.toLowerCase().includes(query) ? '' : 'none';
+            });
+        });
+
+        searchBox.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const first = options.find(o => o.style.display !== 'none' && o.value !== '');
+                if (first) first.selected = true;
+            }
+        });
+    }
+
+    /* ============================================================
+       TABLE EXTRACTOR
+    ============================================================ */
+    function extractData() {
+        const table = document.getElementById('quickedittable');
+        const list = [];
+        if (!table) return list;
+
+        for (let i = 1; i < table.rows.length; i++) {
+            try {
+                const cells = table.rows[i].cells;
+                const postID = cells[1].innerText.trim();
+                const questionTitle = cells[3].lastChild.firstChild.value;
+                const tag = cells[5].firstChild.firstChild.value;
+                list.push({ postID, questionTitle, tag });
+            } catch (e) {
+                console.warn('Skipping row', i, e);
+            }
+        }
+        return list;
+    }
+
+    /* ============================================================
+       CARD RENDERING (editable, with lock/fail states)
+    ============================================================ */
+    function renderTagChips(tagString) {
+        const tags = (tagString || '').split(',').map(t => t.trim()).filter(Boolean);
+        if (!tags.length) return `<span style="color:var(--qa-text-secondary);font-size:11px;">no tags</span>`;
+        return tags.map(t => `<span class="qa-tag-chip">${escapeHtml(t)}</span>`).join('');
+    }
+
+    function renderCards() {
+        const data = state.working;
+        if (!data.length) {
+            return `<p style="color:var(--qa-text-secondary);text-align:center;padding:40px 0;">
+                No data. Click "Extract Data" after selecting a tag on the page.
+            </p>`;
+        }
+
+        return `<div class="qa-card-list">` + data.map((item, idx) => {
+            const status = state.itemStatus[idx];
+            const isFailed = status === 'failed';
+            const isLocked = state.lockNonFailed && status === 'success';
+            const disabledAttr = isLocked ? 'disabled' : '';
+
+            const cardClasses = ['qa-card'];
+            if (isFailed) cardClasses.push('qa-card-failed');
+            if (isLocked) cardClasses.push('qa-card-locked');
+
+            const badge = isFailed
+                ? `<span class="qa-status-badge qa-status-failed">Failed</span>`
+                : (isLocked ? `<span class="qa-status-badge qa-status-locked">🔒 Locked</span>` : '');
+
+            return `
+            <div class="${cardClasses.join(' ')}" data-idx="${idx}">
+                <div class="qa-card-meta">
+                    <span class="qa-card-index">#${idx + 1}</span>
+                    ${badge}
+                </div>
+                <div class="qa-card-row">
+                    <span class="qa-card-label">Post ID</span>
+                    <span class="qa-card-value qa-card-static">${escapeHtml(item.postID)}</span>
+                </div>
+                <div class="qa-card-row">
+                    <span class="qa-card-label">Title</span>
+                    <span class="qa-card-value">
+                        <input class="qa-edit-input" type="text"
+                            data-field="questionTitle" data-idx="${idx}"
+                            value="${escapeHtml(item.questionTitle)}" ${disabledAttr}>
+                    </span>
+                </div>
+                <div class="qa-card-row">
+                    <span class="qa-card-label">Tags</span>
+                    <span class="qa-card-value">
+                        <input class="qa-edit-input" type="text"
+                            data-field="tag" data-idx="${idx}"
+                            value="${escapeHtml(item.tag)}" ${disabledAttr}>
+                        <div class="qa-chip-preview" data-chip-preview="${idx}">${renderTagChips(item.tag)}</div>
+                    </span>
+                </div>
+            </div>`;
+        }).join('') + `</div>`;
+    }
+
+    /* ============================================================
+       MODAL BUILD
+    ============================================================ */
+    function buildModal() {
+        const overlay = document.createElement('div');
+        overlay.id = 'qa-modal-overlay';
+        overlay.innerHTML = `
+            <div id="qa-modal">
+                <div id="qa-toast"></div>
+
+                <div id="qa-modal-header">
+                    <h2>Quickedit Toolkit</h2>
+                    <button id="qa-modal-close" title="Close">&#10005;</button>
+                </div>
+
+                <div id="qa-tabs">
+                    <button class="qa-tab-btn qa-active" data-tab="visual">Visualized</button>
+                    <button class="qa-tab-btn" data-tab="run">Run Updates</button>
+                </div>
+
+                <div id="qa-toolbar">
+                    <div class="qa-toolbar-group">
+                        <div class="qa-field-stack">
+                            <label>Field</label>
+                            <select id="qa-fr-field">
+                                <option value="questionTitle">Title</option>
+                                <option value="tag">Tag</option>
+                                <option value="both">Both</option>
+                            </select>
+                        </div>
+                        <div class="qa-field-stack">
+                            <label>Find</label>
+                            <input type="text" id="qa-fr-find" placeholder="text to find">
+                        </div>
+                        <div class="qa-field-stack">
+                            <label>Replace</label>
+                            <input type="text" id="qa-fr-replace" placeholder="replacement">
+                        </div>
+                        <div class="qa-field-stack">
+                            <label>Start # (optional)</label>
+                            <input type="number" id="qa-fr-startnum" placeholder="1" style="width:55px;">
+                        </div>
+                        <div class="qa-checkbox-wrap">
+                            <input type="checkbox" id="qa-fr-regex"> Regex
+                        </div>
+                        <button class="qa-btn-sm" id="qa-fr-apply">Replace All</button>
+                    </div>
+
+                    <div class="qa-toolbar-group">
+                        <div class="qa-field-stack">
+                            <label>Range From</label>
+                            <input type="number" id="qa-range-from" min="1" value="1">
+                        </div>
+                        <div class="qa-field-stack">
+                            <label>To</label>
+                            <input type="number" id="qa-range-to" min="1">
+                        </div>
+                        <button class="qa-btn-sm" id="qa-range-apply">Apply</button>
+                    </div>
+
+                    <div class="qa-toolbar-group">
+                        <div class="qa-field-stack">
+                            <label>Bulk Tag</label>
+                            <input type="text" id="qa-bulk-tag" placeholder="tag-name">
+                        </div>
+                        <button class="qa-btn-sm" id="qa-bulk-add">+ Add to All</button>
+                        <button class="qa-btn-sm qa-danger" id="qa-bulk-remove">− Remove from All</button>
+                    </div>
+
+                    <div id="qa-toolbar-right">
+                        <button class="qa-btn-sm qa-secondary" id="qa-undo-btn">↩ Undo</button>
+                        <button class="qa-btn-sm qa-secondary" id="qa-reset-data">Reset to Original</button>
+                    </div>
+                </div>
+
+                <div id="qa-modal-body">
+                    <div class="qa-tab-panel qa-active" data-panel="visual">
+                        <div id="qa-lock-bar" class="qa-lock-bar qa-hidden"></div>
+                        <div id="qa-cards-container"></div>
+                    </div>
+
+                    <div class="qa-tab-panel" data-panel="run">
+                        <div id="qa-run-panel">
+                            <div class="qa-run-config">
+                                <div class="qa-run-field">
+                                    <label>Min Delay (sec)</label>
+                                    <input type="number" id="qa-min-delay" value="10" min="0">
+                                </div>
+                                <div class="qa-run-field">
+                                    <label>Max Delay (sec)</label>
+                                    <input type="number" id="qa-max-delay" value="15" min="0">
+                                </div>
+                                <button class="qa-btn-sm qa-secondary" id="qa-view-toggle">🔧 Technical Log</button>
+                                <div class="qa-run-buttons">
+                                    <button class="qa-btn qa-btn-start" id="qa-run-start">▶ Start</button>
+                                    <button class="qa-btn qa-btn-pause" id="qa-run-pause" disabled>⏸ Pause</button>
+                                    <button class="qa-btn qa-btn-stop" id="qa-run-stop" disabled>■ Stop</button>
+                                </div>
+                            </div>
+
+                            <div id="qa-run-banner" class="qa-run-banner qa-hidden"></div>
+
+                            <div class="qa-progress-wrap">
+                                <div class="qa-progress-track">
+                                    <div class="qa-progress-fill" id="qa-progress-fill"></div>
+                                </div>
+                                <div class="qa-progress-meta">
+                                    <span id="qa-progress-text">0 / 0 (0%)</span>
+                                    <span id="qa-progress-status">Idle</span>
+                                </div>
+                            </div>
+
+                            <div class="qa-stat-row">
+                                <div class="qa-stat-chip qa-success">
+                                    <span class="qa-stat-num" id="qa-stat-success">0</span>
+                                    <span class="qa-stat-label">Succeeded</span>
+                                </div>
+                                <div class="qa-stat-chip qa-failed">
+                                    <span class="qa-stat-num" id="qa-stat-failed">0</span>
+                                    <span class="qa-stat-label">Failed</span>
+                                </div>
+                                <div class="qa-stat-chip">
+                                    <span class="qa-stat-num" id="qa-stat-remaining">0</span>
+                                    <span class="qa-stat-label">Remaining</span>
+                                </div>
+                            </div>
+
+                            <div id="qa-run-views">
+                                <div id="qa-simple-feed" class="qa-run-view qa-active"></div>
+                                <div id="qa-log-console" class="qa-run-view"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="qa-modal-footer">
+                    <span id="qa-record-count"></span>
+                    <button id="qa-copy-btn">Copy JSON</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        return overlay;
+    }
+
+    /* ============================================================
+       MODAL LOGIC
+    ============================================================ */
+    let overlayEl = null;
+
+    function q(sel) { return overlayEl.querySelector(sel); }
+
+    function pushHistory() {
+        state.history.push(deepClone(state.working));
+        if (state.history.length > 25) state.history.shift();
+    }
+
+    function showToast(msg) {
+        const toast = q('#qa-toast');
+        toast.textContent = msg;
+        toast.classList.add('qa-show');
+        clearTimeout(toast._timer);
+        toast._timer = setTimeout(() => toast.classList.remove('qa-show'), 2400);
+    }
+
+    function flashCards(indices) {
+        indices.forEach(idx => {
+            const card = overlayEl.querySelector(`.qa-card[data-idx="${idx}"]`);
+            if (!card) return;
+            card.classList.add('qa-flash');
+            setTimeout(() => card.classList.remove('qa-flash'), 900);
+        });
+    }
+
+    function renderLockBar() {
+        const bar = q('#qa-lock-bar');
+        if (!bar) return;
+        const { success, failed } = computeStats();
+
+        if (success === 0 && failed === 0) {
+            bar.classList.add('qa-hidden');
+            bar.innerHTML = '';
+            return;
+        }
+
+        bar.classList.remove('qa-hidden');
+        const lockedCount = state.lockNonFailed ? success : 0;
+
+        const summary = failed > 0
+            ? `⚠️ <strong>${failed}</strong> item${failed !== 1 ? 's' : ''} failed — editable below`
+            : `✅ All ${success} item${success !== 1 ? 's' : ''} succeeded`;
+
+        const lockedNote = success > 0
+            ? ` · <strong>${lockedCount}</strong> ${state.lockNonFailed ? 'locked' : 'succeeded (unlocked)'}`
+            : '';
+
+        bar.innerHTML = `
+            <span class="qa-lock-bar-text">${summary}${lockedNote}</span>
+            <button class="qa-btn-sm ${state.lockNonFailed ? 'qa-secondary' : ''}" id="qa-lock-toggle">
+                ${state.lockNonFailed ? '🔓 Unlock All' : '🔒 Lock Successful Items'}
+            </button>
+        `;
+
+        q('#qa-lock-toggle').onclick = () => {
+            state.lockNonFailed = !state.lockNonFailed;
+            renderAll();
+            showToast(state.lockNonFailed ? '🔒 Successful items locked.' : '🔓 All items unlocked for editing.');
+        };
+    }
+
+    function renderAll() {
+        q('#qa-cards-container').innerHTML = renderCards();
+        renderLockBar();
+
+        const { total } = computeStats();
+        q('#qa-record-count').textContent = `${total} record${total !== 1 ? 's' : ''}`;
+        q('#qa-range-to').value = total || '';
+        q('#qa-undo-btn').disabled = state.history.length === 0;
+        q('#qa-undo-btn').style.opacity = state.history.length === 0 ? '0.5' : '1';
+        updateProgressUI();
+    }
+
+    function switchTab(tabName) {
+        overlayEl.querySelectorAll('.qa-tab-btn').forEach(b => b.classList.toggle('qa-active', b.dataset.tab === tabName));
+        overlayEl.querySelectorAll('.qa-tab-panel').forEach(p => p.classList.toggle('qa-active', p.dataset.panel === tabName));
+        q('#qa-toolbar').classList.toggle('qa-hidden', tabName === 'run');
+    }
+
+    function openModal() {
+        if (overlayEl && state.isRunning) {
+            document.body.classList.add('qa-modal-open');
+            requestAnimationFrame(() => overlayEl.classList.add('qa-visible'));
+            return;
+        }
+
+        const data = extractData();
+        console.log(data);
+
+        state.original = data;
+        state.working = deepClone(data);
+        state.history = [];
+        state.itemStatus = {};
+        state.lockNonFailed = false;
+        state.isRunning = false;
+        state.isPaused = false;
+        state.stopRequested = false;
+        state.consecutiveFailures = 0;
+        state.consecutiveAuthFailures = 0;
+
+        if (!overlayEl) overlayEl = buildModal();
+        wireModalEvents();
+        renderAll();
+        q('#qa-log-console').innerHTML = '';
+        q('#qa-simple-feed').innerHTML = '';
+        q('#qa-simple-feed').classList.add('qa-active');
+        q('#qa-log-console').classList.remove('qa-active');
+        q('#qa-view-toggle').textContent = '🔧 Technical Log';
+        hideBanner();
+        updateRunButtons();
+        switchTab('visual');
+
+        document.body.classList.add('qa-modal-open');
+        requestAnimationFrame(() => overlayEl.classList.add('qa-visible'));
+    }
+
+    function closeModal() {
+        if (!overlayEl) return;
+        overlayEl.classList.remove('qa-visible');
+        setTimeout(() => document.body.classList.remove('qa-modal-open'), 260);
+    }
+
+    function wireModalEvents() {
+        overlayEl.querySelectorAll('.qa-tab-btn').forEach(btn => {
+            btn.onclick = () => switchTab(btn.dataset.tab);
+        });
+
+        q('#qa-modal-close').onclick = closeModal;
+        overlayEl.onclick = (e) => { if (e.target === overlayEl) closeModal(); };
+
+        const visualPanel = q('[data-panel="visual"]');
+
+        visualPanel.addEventListener('focusin', (e) => {
+            if (e.target.matches('.qa-edit-input')) e.target.dataset.prev = e.target.value;
+        });
+
+        // Live chip preview while typing
+        visualPanel.addEventListener('input', (e) => {
+            if (e.target.matches('.qa-edit-input[data-field="tag"]')) {
+                const preview = overlayEl.querySelector(`[data-chip-preview="${e.target.dataset.idx}"]`);
+                if (preview) preview.innerHTML = renderTagChips(e.target.value);
+            }
+        });
+
+        // Committed edit — reverts a "success" item back to pending so it gets retried
+        visualPanel.addEventListener('change', (e) => {
+            if (!e.target.matches('.qa-edit-input') || e.target.disabled) return;
+            const idx = parseInt(e.target.dataset.idx, 10);
+            const field = e.target.dataset.field;
+            const newVal = e.target.value;
+            if (newVal === e.target.dataset.prev) return;
+
+            pushHistory();
+            state.working[idx][field] = newVal;
+
+            let statusReverted = false;
+            if (state.itemStatus[idx] === 'success') {
+                delete state.itemStatus[idx];
+                statusReverted = true;
+            }
+
+            renderAll();
+            if (statusReverted) showToast('✏️ Edited a completed item — it will be resent on the next run.');
+        });
+
+        /* Find & Replace */
+        q('#qa-fr-apply').onclick = () => {
+            const field = q('#qa-fr-field').value;
+            const find = q('#qa-fr-find').value;
+            const replaceRaw = q('#qa-fr-replace').value;
+            const useRegex = q('#qa-fr-regex').checked;
+            const startNumStr = q('#qa-fr-startnum').value;
+            const useAutoNumber = replaceRaw.includes('{{n}}') && startNumStr !== '';
+            let counter = useAutoNumber ? parseInt(startNumStr, 10) : null;
+
+            if (!find) return showToast('⚠️ Enter text to find first.');
+
+            let matcher;
+            try {
+                matcher = useRegex ? new RegExp(find, 'g') : find;
+            } catch (e) {
+                return showToast('⚠️ Invalid regex: ' + e.message);
+            }
+
+            pushHistory();
+            const changedIndices = [];
+
+            state.working.forEach((item, idx) => {
+                let itemChanged = false;
+
+                const applyTo = (str) => {
+                    if (typeof str !== 'string') return str;
+                    let didMatch = false, result;
+                    if (useRegex) {
+                        result = str.replace(matcher, () => {
+                            didMatch = true;
+                            return useAutoNumber ? replaceRaw.replace('{{n}}', counter) : replaceRaw;
+                        });
+                    } else {
+                        if (str.includes(find)) {
+                            didMatch = true;
+                            const rep = useAutoNumber ? replaceRaw.replace('{{n}}', counter) : replaceRaw;
+                            result = str.split(find).join(rep);
+                        } else {
+                            result = str;
+                        }
+                    }
+                    if (didMatch) { itemChanged = true; if (useAutoNumber) counter++; }
+                    return result;
+                };
+
+                if (field === 'questionTitle' || field === 'both') item.questionTitle = applyTo(item.questionTitle);
+                if (field === 'tag' || field === 'both') item.tag = applyTo(item.tag);
+                if (itemChanged) changedIndices.push(idx);
+            });
+
+            if (!changedIndices.length) {
+                state.history.pop();
+                return showToast('No matches found — nothing changed.');
+            }
+
+            resetRunProgress();
+            renderAll();
+            flashCards(changedIndices);
+            showToast(`✅ Updated ${changedIndices.length} record${changedIndices.length !== 1 ? 's' : ''}.`);
+        };
+
+        /* Range slice */
+        q('#qa-range-apply').onclick = () => {
+            const from = parseInt(q('#qa-range-from').value, 10);
+            const to = parseInt(q('#qa-range-to').value, 10);
+            if (!from || !to || from < 1 || to < from || to > state.working.length)
+                return showToast(`⚠️ Enter a valid range between 1 and ${state.working.length}.`);
+
+            pushHistory();
+            state.working = state.working.slice(from - 1, to);
+            resetRunProgress();
+            renderAll();
+            showToast(`Sliced to records ${from}–${to} (${state.working.length} kept).`);
+        };
+
+        /* Bulk tag */
+        q('#qa-bulk-add').onclick = () => {
+            const tag = q('#qa-bulk-tag').value.trim();
+            if (!tag) return showToast('⚠️ Enter a tag name first.');
+            pushHistory();
+            let count = 0;
+            state.working.forEach(item => {
+                const tags = (item.tag || '').split(',').map(t => t.trim()).filter(Boolean);
+                if (!tags.includes(tag)) { tags.push(tag); item.tag = tags.join(','); count++; }
+            });
+            resetRunProgress();
+            renderAll();
+            showToast(`Added "${tag}" to ${count} record${count !== 1 ? 's' : ''}.`);
+        };
+
+        q('#qa-bulk-remove').onclick = () => {
+            const tag = q('#qa-bulk-tag').value.trim();
+            if (!tag) return showToast('⚠️ Enter a tag name first.');
+            pushHistory();
+            let count = 0;
+            state.working.forEach(item => {
+                const tags = (item.tag || '').split(',').map(t => t.trim()).filter(Boolean);
+                if (tags.includes(tag)) { item.tag = tags.filter(t => t !== tag).join(','); count++; }
+            });
+            resetRunProgress();
+            renderAll();
+            showToast(`Removed "${tag}" from ${count} record${count !== 1 ? 's' : ''}.`);
+        };
+
+        /* Undo */
+        q('#qa-undo-btn').onclick = () => {
+            if (!state.history.length) return;
+            state.working = state.history.pop();
+            resetRunProgress();
+            renderAll();
+            showToast('↩ Undone.');
+        };
+
+        /* Reset */
+        q('#qa-reset-data').onclick = () => {
+            if (!confirm('Discard all edits and restore the originally extracted data?')) return;
+            pushHistory();
+            state.working = deepClone(state.original);
+            resetRunProgress();
+            renderAll();
+            showToast('Reset to original extracted data.');
+        };
+
+        /* Copy JSON */
+        const copyBtn = q('#qa-copy-btn');
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(JSON.stringify(state.working, null, 2)).then(() => {
+                const orig = copyBtn.textContent;
+                copyBtn.textContent = 'Copied!';
+                copyBtn.classList.add('qa-copied');
+                setTimeout(() => { copyBtn.textContent = orig; copyBtn.classList.remove('qa-copied'); }, 1500);
+            });
+        };
+
+        /* View toggle */
+        q('#qa-view-toggle').onclick = () => {
+            const feed = q('#qa-simple-feed');
+            const log = q('#qa-log-console');
+            const showingSimple = feed.classList.contains('qa-active');
+            feed.classList.toggle('qa-active', !showingSimple);
+            log.classList.toggle('qa-active', showingSimple);
+            q('#qa-view-toggle').textContent = showingSimple ? '🙂 Simple View' : '🔧 Technical Log';
+        };
+
+        /* Run controls */
+        q('#qa-run-start').onclick = onStartRun;
+        q('#qa-run-pause').onclick = onPauseResume;
+        q('#qa-run-stop').onclick = onStopRun;
+    }
+
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+    /* ============================================================
+       RUN ENGINE
+    ============================================================ */
+    function resetRunProgress() {
+        state.itemStatus = {};
+        state.lockNonFailed = false;
+        state.consecutiveFailures = 0;
+        state.consecutiveAuthFailures = 0;
+        if (overlayEl) { renderLockBar(); updateProgressUI(); }
+    }
+
+    function appendLog(text, type = 'info') {
+        if (!overlayEl) return;
+        const con = q('#qa-log-console');
+        const line = document.createElement('div');
+        line.className = `qa-log-line qa-log-${type}`;
+        line.textContent = text ? `[${new Date().toLocaleTimeString()}] ${text}` : '';
+        con.appendChild(line);
+        con.scrollTop = con.scrollHeight;
+    }
+
+    function appendFeedCard(idx, item, qRes, tRes, overallOk) {
+        const feed = q('#qa-simple-feed');
+        const card = document.createElement('div');
+        card.className = 'qa-feed-card';
+        card.innerHTML = `
+            <div class="qa-feed-head">
+                <span class="qa-feed-num">#${idx}</span>
+                <span class="qa-feed-postid">Post ID ${escapeHtml(item.postID)}</span>
+                <span class="qa-feed-overall ${overallOk ? 'qa-ok' : 'qa-fail'}">
+                    ${overallOk ? '✅ Success' : '⚠️ Needs Attention'}
+                </span>
+            </div>
+            <div class="qa-feed-body">
+                <div class="qa-feed-item">
+                    <span class="qa-feed-icon">${qRes.ok ? '✅' : '❌'}</span>
+                    <div class="qa-feed-text">
+                        <div class="qa-feed-title-text">${escapeHtml(item.questionTitle)}</div>
+                        <div class="qa-feed-sub ${qRes.ok ? '' : 'qa-feed-sub-error'}">
+                            ${qRes.ok ? 'Title saved successfully' : escapeHtml(qRes.message)}
+                        </div>
+                    </div>
+                </div>
+                <div class="qa-feed-item">
+                    <span class="qa-feed-icon">${tRes.ok ? '✅' : '❌'}</span>
+                    <div class="qa-feed-text">
+                        <div class="qa-feed-tags">${renderTagChips(item.tag)}</div>
+                        <div class="qa-feed-sub ${tRes.ok ? '' : 'qa-feed-sub-error'}">
+                            ${tRes.ok ? 'Tags saved successfully' : escapeHtml(tRes.message)}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        feed.appendChild(card);
+        feed.scrollTop = feed.scrollHeight;
+    }
+
+    function showBanner(type, message) {
+        const banner = q('#qa-run-banner');
+        banner.className = 'qa-run-banner qa-banner-' + type;
+        const icon = type === 'auth' ? '🔒' : type === 'success' ? '🎉' : '⚠️';
+        const actionsHtml = type !== 'success'
+            ? `<button class="qa-btn-sm" id="qa-banner-resume">▶ Resume</button>
+               <button class="qa-btn-sm qa-danger" id="qa-banner-stop">■ Stop</button>`
+            : `<button class="qa-btn-sm qa-secondary" id="qa-banner-dismiss">Dismiss</button>`;
+
+        banner.innerHTML = `
+            <span class="qa-banner-icon">${icon}</span>
+            <span class="qa-banner-text">${escapeHtml(message)}</span>
+            <span class="qa-banner-actions">${actionsHtml}</span>
+        `;
+        banner.classList.remove('qa-hidden');
+
+        if (type !== 'success') {
+            q('#qa-banner-resume').onclick = () => { onPauseResume(); hideBanner(); };
+            q('#qa-banner-stop').onclick = () => { onStopRun(); hideBanner(); };
+        } else {
+            q('#qa-banner-dismiss').onclick = hideBanner;
+            setTimeout(hideBanner, 6000);
+        }
+    }
+
+    function hideBanner() {
+        const b = q('#qa-run-banner');
+        if (b) b.classList.add('qa-hidden');
+    }
+
+    function updateProgressUI() {
+        if (!overlayEl) return;
+        const { total, success, failed, remaining } = computeStats();
+        const pct = total ? Math.round((success / total) * 100) : 0;
+
+        q('#qa-progress-fill').style.width = pct + '%';
+        q('#qa-progress-text').textContent = `${success} / ${total} (${pct}%)`;
+        q('#qa-stat-success').textContent = success;
+        q('#qa-stat-failed').textContent = failed;
+        q('#qa-stat-remaining').textContent = remaining;
+    }
+
+    function updateRunButtons() {
+        if (!overlayEl) return;
+        q('#qa-run-start').disabled = state.isRunning;
+        q('#qa-run-pause').disabled = !state.isRunning;
+        q('#qa-run-stop').disabled = !state.isRunning;
+        q('#qa-run-pause').textContent = state.isPaused ? '▶ Resume' : '⏸ Pause';
+
+        const { total, failed, remaining } = computeStats();
+        let statusText = 'Idle';
+        if (state.isRunning) statusText = state.isPaused ? 'Paused' : 'Running…';
+        else if (total > 0 && remaining === 0) statusText = failed > 0 ? 'Needs Attention' : 'Completed';
+        q('#qa-progress-status').textContent = statusText;
+    }
+
+    function classifyResponse(res, bodyText) {
+        const status = res.status;
+
+        if (status === 401 || status === 403)
+            return { ok: false, status, message: 'Unauthorized — you appear to be logged out.', isAuthError: true };
+
+        if (res.redirected && /login|signin/i.test(res.url))
+            return { ok: false, status, message: 'Redirected to login page — session expired.', isAuthError: true };
+
+        if (/<input[^>]*type=["']?password["']?/i.test(bodyText) || /<form[^>]*login/i.test(bodyText))
+            return { ok: false, status, message: 'Login form detected in response — session expired.', isAuthError: true };
+
+        if (!res.ok)
+            return { ok: false, status, message: `Server returned an error (HTTP ${status}).`, isAuthError: false };
+
+        if ((bodyText || '').trim().startsWith('<'))
+            return { ok: false, status, message: 'Unexpected page returned — you may need to log in again.', isAuthError: true };
+
+        return { ok: true, status, message: 'Saved successfully.', isAuthError: false };
+    }
+
+    async function postAjax(id, postid, data) {
+        const body = new URLSearchParams();
+        body.set('ajaxdata', JSON.stringify({ id, postid: String(postid), data: String(data) }));
+        try {
+            const res = await fetch('https://gateoverflow.in/quickeditajax', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                },
+                body: body.toString(),
+            });
+            let bodyText = '';
+            try { bodyText = await res.text(); } catch (_) {}
+            return classifyResponse(res, bodyText);
+        } catch (e) {
+            return { ok: false, status: 'ERR', message: 'Network error — check your internet connection.', isAuthError: false };
+        }
+    }
+
+    async function runLoop() {
+        state.isRunning = true;
+        state.stopRequested = false;
+        updateRunButtons();
+        hideBanner();
+
+        const queue = state.working
+            .map((_, i) => i)
+            .filter(i => state.itemStatus[i] !== 'success');
+
+        for (let qi = 0; qi < queue.length; qi++) {
+            const idx = queue[qi];
+
+            if (state.stopRequested) break;
+            while (state.isPaused) { await sleep(200); if (state.stopRequested) break; }
+            if (state.stopRequested) break;
+
+            const item = state.working[idx];
+            const displayNum = idx + 1;
+
+            appendLog(`Question ${displayNum} (Post ${item.postID}) — sending title update...`, 'info');
+            const qRes = await postAjax(1, item.postID, item.questionTitle);
+            appendLog(`Question ${displayNum} title: HTTP ${qRes.status} — ${qRes.message}`, qRes.ok ? 'success' : 'error');
+
+            await interruptibleSleep(randomBetween(state.minDelay, state.maxDelay) * 1000);
+            if (state.stopRequested) break;
+            while (state.isPaused) { await sleep(200); if (state.stopRequested) break; }
+            if (state.stopRequested) break;
+
+            appendLog(`Question ${displayNum} (Post ${item.postID}) — sending tag update...`, 'info');
+            const tRes = await postAjax(2, item.postID, item.tag);
+            appendLog(`Question ${displayNum} tag: HTTP ${tRes.status} — ${tRes.message}`, tRes.ok ? 'success' : 'error');
+            appendLog('', 'info');
+
+            const overallOk = qRes.ok && tRes.ok;
+            state.itemStatus[idx] = overallOk ? 'success' : 'failed';
+
+            if (overallOk) {
+                state.consecutiveFailures = 0;
+                state.consecutiveAuthFailures = 0;
+            } else {
+                state.consecutiveFailures++;
+                if (qRes.isAuthError || tRes.isAuthError) state.consecutiveAuthFailures++;
+                state.lockNonFailed = true;
+            }
+
+            appendFeedCard(displayNum, item, qRes, tRes, overallOk);
+            renderAll();
+
+            if (state.consecutiveAuthFailures >= 2) {
+                state.isPaused = true;
+                showBanner('auth', 'You appear to be logged out of GATE Overflow. Please log in, then click Resume to continue.');
+                updateRunButtons();
+            } else if (state.consecutiveFailures >= 4) {
+                state.isPaused = true;
+                showBanner('generic', 'Multiple updates failed in a row. Pausing — check details, then Resume or Stop.');
+                updateRunButtons();
+            }
+
+            if (qi < queue.length - 1) {
+                await interruptibleSleep(randomBetween(state.minDelay, state.maxDelay) * 1000);
+            }
+        }
+
+        state.isRunning = false;
+        state.isPaused = false;
+        updateRunButtons();
+        updateProgressUI();
+
+        const stats = computeStats();
+        if (!state.stopRequested) {
+            if (stats.failed === 0 && stats.remaining === 0) {
+                appendLog(`🎉 All done! ${stats.success} succeeded, 0 failed.`, 'done');
+                showBanner('success', `All ${stats.success} question(s) updated successfully!`);
+            } else if (stats.failed > 0) {
+                appendLog(`Run finished — ${stats.failed} item(s) still need attention.`, 'warn');
+                showBanner('generic', `${stats.failed} item(s) failed and remain editable in the Visualized tab. Fix them, then click Start again to retry just those.`);
+            }
+        } else {
+            appendLog('⏹ Stopped by user.', 'warn');
+        }
+    }
+
+    function onStartRun() {
+        if (state.isRunning) return;
+        if (!state.working.length) return showToast('⚠️ No data to run. Extract data first.');
+
+        const { remaining, failed } = computeStats();
+        const toProcess = remaining + failed;
+
+        if (toProcess === 0) return showToast('✅ Everything is already up to date — nothing to run.');
+
+        state.minDelay = parseFloat(q('#qa-min-delay').value) || 0;
+        state.maxDelay = parseFloat(q('#qa-max-delay').value) || state.minDelay;
+        if (state.maxDelay < state.minDelay) state.maxDelay = state.minDelay;
+
+        if (!confirm(`This will send LIVE update requests for ${toProcess} question(s) to GATE Overflow. Continue?`)) return;
+
+        state.isPaused = false;
+        runLoop();
+    }
+
+    function onPauseResume() {
+        state.isPaused = !state.isPaused;
+        appendLog(state.isPaused ? '⏸ Paused.' : '▶ Resumed.', 'warn');
+        updateRunButtons();
+    }
+
+    function onStopRun() {
+        state.stopRequested = true;
+        state.isPaused = false;
+        updateRunButtons();
+    }
+
+    /* ============================================================
+       FAB
+    ============================================================ */
+    function addFab() {
+        const table = document.getElementById('quickedittable');
+        const fab = document.createElement('button');
+        fab.id = 'qa-extract-fab';
+        fab.textContent = table ? 'Extract Data' : 'No Table Found';
+        fab.disabled = !table;
+        fab.onclick = openModal;
+        document.body.appendChild(fab);
+    }
+
+    /* ============================================================
+       INIT — called immediately (page is already fully loaded by
+       the time this fetched code runs, so no 'load' listener needed)
+    ============================================================ */
+    function init() {
+        injectStyle();
+        initTagSearch();
+        addFab();
+    }
+
+    init();
+})();

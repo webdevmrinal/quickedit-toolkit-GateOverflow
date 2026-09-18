@@ -1,11 +1,11 @@
-// @toolkit-version 8.1
+// @toolkit-version 8.2
 // GATE Overflow Quickedit Toolkit — Remote Payload
 // Fetched & executed by the Loader userscript. Not meant to be installed directly in Tampermonkey.
 
 (function () {
     'use strict';
 
-    const TOOLKIT_VERSION = '8.1';
+    const TOOLKIT_VERSION = '8.2';
 
     /* ============================================================
        STATE
@@ -24,6 +24,12 @@
         consecutiveAuthFailures: 0,
         minDelay: 10,
         maxDelay: 15,
+
+        // Smart Renumber
+        renumberBaseline: null,          // { prefix, suffix, defaultPad, originalTitles }
+        renumberDetectionFailReason: null,
+        renumberCurrentStart: null,
+        renumberCurrentPad: null,
     };
 
     const HIDE_DEFAULTS_KEY = 'qa_hide_defaults_v1';
@@ -165,6 +171,7 @@
     .qa-btn-sm.qa-secondary:hover { background: #77777c; }
     .qa-btn-sm.qa-danger { background: var(--qa-red); }
     .qa-btn-sm.qa-danger:hover { background: #e0342b; }
+    .qa-btn-sm:disabled { background: #c7c7cc !important; cursor: not-allowed; }
     .qa-checkbox-wrap {
         display: flex; align-items: center; gap: 4px;
         font-size: 12px; color: var(--qa-text-secondary); height: 30px;
@@ -178,14 +185,64 @@
     .qa-tab-panel { display: none; height: 100%; }
     .qa-tab-panel.qa-active { display: flex; flex-direction: column; }
 
-    .qa-lock-bar {
-        display: flex; align-items: center; justify-content: space-between; gap: 10px;
-        background: #fff8e6; border: 1px solid #ffe1a8; color: #7a5200;
-        border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; flex-shrink: 0;
+    /* ---- Smart Renumber panel ---- */
+    .qa-renumber-panel {
+        border: 1px solid var(--qa-border); background: var(--qa-bg-secondary);
+        border-radius: 12px; padding: 16px; margin-bottom: 14px; flex-shrink: 0;
     }
-    .qa-lock-bar.qa-hidden { display: none; }
-    .qa-lock-bar-text strong { font-weight: 700; }
+    .qa-renumber-panel.qa-hidden { display: none; }
+    .qa-renumber-header {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 12px; font-size: 14px; color: var(--qa-text);
+    }
+    .qa-renumber-header-actions { display: flex; gap: 8px; }
+    .qa-renumber-fail {
+        font-size: 13px; color: #86201b; background: #fdecea; border: 1px solid #f5c2c0;
+        padding: 12px 14px; border-radius: 10px; line-height: 1.55;
+    }
+    .qa-renumber-fail-reason { display: block; margin-top: 4px; font-style: italic; opacity: 0.85; }
+    .qa-renumber-pattern {
+        font-size: 13px; margin-bottom: 14px; display: flex; align-items: center;
+        gap: 6px; flex-wrap: wrap; color: var(--qa-text-secondary);
+    }
+    .qa-renumber-pattern code {
+        background: #ececee; padding: 2px 7px; border-radius: 5px;
+        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--qa-text);
+    }
+    .qa-renumber-num-slot { font-weight: 700; color: var(--qa-blue); padding: 0 2px; }
+    .qa-renumber-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 14px; }
+    .qa-renumber-controls input {
+        border: 1px solid var(--qa-border); border-radius: 8px; padding: 6px 10px;
+        font-size: 13px; width: 90px; font-family: var(--qa-font);
+    }
+    .qa-renumber-collision-warning {
+        background: #fdecea; border: 1px solid #f5c2c0; color: #86201b;
+        border-radius: 10px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 14px; line-height: 1.6;
+    }
+    .qa-renumber-collision-item { margin-top: 3px; }
+    .qa-renumber-preview { margin-bottom: 14px; }
+    .qa-renumber-preview-title {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em;
+        color: var(--qa-text-secondary); font-weight: 700; margin-bottom: 6px;
+    }
+    #qa-renumber-preview-list {
+        max-height: 200px; overflow-y: auto; border: 1px solid var(--qa-border);
+        border-radius: 10px; background: var(--qa-bg);
+    }
+    .qa-renumber-row {
+        display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+        font-size: 12.5px; border-bottom: 1px solid var(--qa-border);
+    }
+    .qa-renumber-row:last-child { border-bottom: none; }
+    .qa-renumber-row-idx { color: var(--qa-text-secondary); font-weight: 600; min-width: 32px; }
+    .qa-renumber-row-post { color: var(--qa-text-secondary); min-width: 90px; }
+    .qa-renumber-row-nums { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; }
+    .qa-renumber-row-old { color: var(--qa-red); text-decoration: line-through; }
+    .qa-renumber-row-arrow { color: var(--qa-text-secondary); margin: 0 4px; }
+    .qa-renumber-row-new { color: #0a7d33; }
+    .qa-renumber-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
+    /* Cards */
     .qa-card-list { display: flex; flex-direction: column; gap: 10px; }
     .qa-card {
         border: 1px solid var(--qa-border); border-radius: 12px; padding: 14px 16px;
@@ -201,10 +258,7 @@
     }
     .qa-card.qa-card-locked .qa-edit-input:hover { background: #e9e9ec; border-color: transparent; }
 
-    .qa-card-meta {
-        position: absolute; top: 10px; right: 14px;
-        display: flex; align-items: center; gap: 6px;
-    }
+    .qa-card-meta { position: absolute; top: 10px; right: 14px; display: flex; align-items: center; gap: 6px; }
     .qa-card-index { font-size: 11px; color: var(--qa-text-secondary); font-weight: 600; }
     .qa-status-badge {
         font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
@@ -383,9 +437,7 @@
     }
     .qa-hide-locked.qa-hidden { display: none; }
     .qa-hide-locked-icon { font-size: 34px; }
-    .qa-hide-locked-text {
-        max-width: 440px; font-size: 13.5px; line-height: 1.55;
-    }
+    .qa-hide-locked-text { max-width: 440px; font-size: 13.5px; line-height: 1.55; }
 
     #qa-hide-form-wrap.qa-hidden { display: none; }
     .qa-hide-intro h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; color: var(--qa-text); }
@@ -463,6 +515,184 @@
             else if (state.itemStatus[i] === 'failed') failed++;
         }
         return { total, success, failed, remaining: total - success - failed };
+    }
+
+    /* ============================================================
+       SMART RENUMBER — pattern detection & helpers
+    ============================================================ */
+    function longestCommonPrefix(strings) {
+        if (!strings.length) return '';
+        let prefix = strings[0];
+        for (let i = 1; i < strings.length; i++) {
+            const s = strings[i];
+            let j = 0;
+            const maxLen = Math.min(prefix.length, s.length);
+            while (j < maxLen && prefix[j] === s[j]) j++;
+            prefix = prefix.slice(0, j);
+            if (!prefix) break;
+        }
+        return prefix;
+    }
+
+    function longestCommonSuffix(strings) {
+        if (!strings.length) return '';
+        let suffix = strings[0];
+        for (let i = 1; i < strings.length; i++) {
+            const s = strings[i];
+            let j = 0;
+            const maxLen = Math.min(suffix.length, s.length);
+            while (j < maxLen && suffix[suffix.length - 1 - j] === s[s.length - 1 - j]) j++;
+            suffix = suffix.slice(suffix.length - j);
+            if (!suffix) break;
+        }
+        return suffix;
+    }
+
+    /* Detects a "<static prefix><NUMBER><static suffix>" pattern across a list of titles.
+       Returns { success:true, prefix, suffix, padWidth, hasLeadingZero } or { success:false, reason }. */
+    function detectNumberingPattern(titles) {
+        if (!titles.length) return { success: false, reason: 'No titles to analyze.' };
+
+        if (titles.length === 1) {
+            const m = titles[0].match(/^(.*?)(\d+)(\D*)$/);
+            if (!m) return { success: false, reason: 'No number found in the title.' };
+            return {
+                success: true,
+                prefix: m[1],
+                suffix: m[3],
+                padWidth: m[2].length,
+                hasLeadingZero: m[2].length > 1 && m[2][0] === '0',
+            };
+        }
+
+        let prefix = longestCommonPrefix(titles);
+        let suffix = longestCommonSuffix(titles);
+
+        const minLen = Math.min(...titles.map(t => t.length));
+        if (prefix.length + suffix.length > minLen) {
+            const allowedSuffixLen = Math.max(0, minLen - prefix.length);
+            suffix = suffix.slice(suffix.length - allowedSuffixLen);
+        }
+
+        const middles = titles.map(t => t.slice(prefix.length, t.length - suffix.length));
+
+        if (middles.every(m => m.length === 0)) {
+            return { success: false, reason: 'No varying number segment detected — titles appear identical.' };
+        }
+        if (!middles.every(m => /^\d+$/.test(m))) {
+            return { success: false, reason: "Titles don't share a consistent numbering pattern — something other than the number differs between them." };
+        }
+
+        const padWidth = Math.max(...middles.map(m => m.length));
+        const hasLeadingZero = middles.some(m => m.length > 1 && m[0] === '0');
+
+        return { success: true, prefix, suffix, padWidth, hasLeadingZero };
+    }
+
+    function formatNumber(num, padWidth) {
+        const str = String(num);
+        if (padWidth > 0 && str.length < padWidth) return str.padStart(padWidth, '0');
+        return str;
+    }
+
+    function extractMiddle(title, prefix, suffix) {
+        if (title.length < prefix.length + suffix.length) return title;
+        return title.slice(prefix.length, title.length - suffix.length);
+    }
+
+    function truncateMiddle(str, maxLen) {
+        if (!str) return str;
+        if (str.length <= maxLen) return str;
+        const keep = Math.floor((maxLen - 3) / 2);
+        return str.slice(0, keep) + '...' + str.slice(str.length - keep);
+    }
+
+    function ensureRenumberBaseline(forceRecapture) {
+        if (!forceRecapture && state.renumberBaseline) return state.renumberBaseline;
+
+        const titles = state.working.map(i => i.questionTitle);
+        const detection = detectNumberingPattern(titles);
+
+        if (detection.success) {
+            state.renumberBaseline = {
+                prefix: detection.prefix,
+                suffix: detection.suffix,
+                defaultPad: detection.hasLeadingZero ? detection.padWidth : 0,
+                originalTitles: titles.slice(),
+            };
+            state.renumberDetectionFailReason = null;
+        } else {
+            state.renumberBaseline = null;
+            state.renumberDetectionFailReason = detection.reason;
+        }
+        return state.renumberBaseline;
+    }
+
+    /* Scans items OUTSIDE the current working slice for the same pattern,
+       returns (highest existing number found) + 1, or 1 if none found. */
+    function suggestSmartStart(prefix, suffix) {
+        const workingIds = new Set(state.working.map(i => i.postID));
+        const others = state.original.filter(i => !workingIds.has(i.postID));
+        let maxNum = 0, found = false;
+
+        others.forEach(item => {
+            const t = item.questionTitle || '';
+            if (t.length >= prefix.length + suffix.length && t.startsWith(prefix) && t.endsWith(suffix)) {
+                const mid = extractMiddle(t, prefix, suffix);
+                if (/^\d+$/.test(mid)) {
+                    found = true;
+                    maxNum = Math.max(maxNum, parseInt(mid, 10));
+                }
+            }
+        });
+
+        return found ? maxNum + 1 : 1;
+    }
+
+    /* Checks whether applying (prefix + number + suffix) for the current slice
+       would recreate a title that already exists elsewhere in the original data. */
+    function checkRenumberCollisions(prefix, suffix, padWidth, start) {
+        const workingIds = new Set(state.working.map(i => i.postID));
+        const others = state.original.filter(i => !workingIds.has(i.postID));
+        const conflicts = [];
+
+        state.working.forEach((item, idx) => {
+            const newTitle = prefix + formatNumber(start + idx, padWidth) + suffix;
+            const collidesWith = others.find(o => o.questionTitle === newTitle);
+            if (collidesWith) conflicts.push({ idx, newTitle, collidesWith });
+        });
+
+        return conflicts;
+    }
+
+    function applyRenumbering(startVal, padWidth) {
+        if (!state.renumberBaseline) return;
+        const { prefix, suffix } = state.renumberBaseline;
+
+        pushHistory();
+        state.working.forEach((item, idx) => {
+            item.questionTitle = prefix + formatNumber(startVal + idx, padWidth) + suffix;
+            if (state.itemStatus[idx] === 'success') delete state.itemStatus[idx];
+        });
+    }
+
+    function revertRenumbering() {
+        if (!state.renumberBaseline) return;
+        pushHistory();
+        state.working.forEach((item, idx) => {
+            item.questionTitle = state.renumberBaseline.originalTitles[idx];
+        });
+    }
+
+    function resetRenumberState(hidePanel) {
+        state.renumberBaseline = null;
+        state.renumberDetectionFailReason = null;
+        state.renumberCurrentStart = null;
+        state.renumberCurrentPad = null;
+        if (overlayEl) {
+            const panel = q('#qa-renumber-panel');
+            if (panel && hidePanel) panel.classList.add('qa-hidden');
+        }
     }
 
     /* ============================================================
@@ -639,6 +869,7 @@
                             <input type="number" id="qa-range-to" min="1">
                         </div>
                         <button class="qa-btn-sm" id="qa-range-apply">Apply</button>
+                        <button class="qa-btn-sm qa-secondary" id="qa-renumber-open">🔢 Smart Renumber</button>
                     </div>
 
                     <div class="qa-toolbar-group">
@@ -658,6 +889,17 @@
 
                 <div id="qa-modal-body">
                     <div class="qa-tab-panel qa-active" data-panel="visual">
+                        <div id="qa-renumber-panel" class="qa-renumber-panel qa-hidden">
+                            <div class="qa-renumber-header">
+                                <strong>🔢 Smart Renumber</strong>
+                                <div class="qa-renumber-header-actions">
+                                    <button class="qa-btn-sm qa-secondary" id="qa-renumber-redetect">🔄 Re-detect Pattern</button>
+                                    <button class="qa-btn-sm qa-secondary" id="qa-renumber-close">Close</button>
+                                </div>
+                            </div>
+                            <div id="qa-renumber-body"></div>
+                        </div>
+
                         <div id="qa-lock-bar" class="qa-lock-bar qa-hidden"></div>
                         <div id="qa-cards-container"></div>
                     </div>
@@ -853,6 +1095,118 @@
         };
     }
 
+    /* ---- Smart Renumber panel rendering ---- */
+    function openRenumberPanel(forceRecapture, autoOnlyIfSuccess) {
+        if (!overlayEl) return;
+        if (!state.working.length) {
+            if (!autoOnlyIfSuccess) showToast('⚠️ No data available to renumber.');
+            return;
+        }
+
+        const baseline = ensureRenumberBaseline(forceRecapture);
+
+        if (!baseline) {
+            if (autoOnlyIfSuccess) return;
+            q('#qa-renumber-panel').classList.remove('qa-hidden');
+            renderRenumberPanel();
+            return;
+        }
+
+        if (autoOnlyIfSuccess) {
+            showToast('🔢 Smart Renumber pattern detected — review before applying.');
+        }
+        q('#qa-renumber-panel').classList.remove('qa-hidden');
+        renderRenumberPanel();
+    }
+
+    function renderRenumberPanel() {
+        const body = q('#qa-renumber-body');
+        if (!body) return;
+
+        if (!state.renumberBaseline) {
+            const reason = state.renumberDetectionFailReason || 'Could not detect a numbering pattern.';
+            body.innerHTML = `
+                <div class="qa-renumber-fail">
+                    ⚠️ Couldn't detect a consistent numbering pattern in the current titles.
+                    <span class="qa-renumber-fail-reason">${escapeHtml(reason)}</span>
+                    Tip: Smart Renumber works best when every title follows the same
+                    "...Question: N" style pattern, differing only in the number. You can still
+                    renumber manually using Find &amp; Replace with the {{n}} auto-number token.
+                </div>`;
+            return;
+        }
+
+        const { prefix, suffix, defaultPad, originalTitles } = state.renumberBaseline;
+        const suggestedStart = suggestSmartStart(prefix, suffix);
+        const currentStart = state.renumberCurrentStart != null ? state.renumberCurrentStart : suggestedStart;
+        const currentPad   = state.renumberCurrentPad   != null ? state.renumberCurrentPad   : defaultPad;
+
+        const rows = state.working.map((item, idx) => ({
+            idx,
+            postID: item.postID,
+            oldNum: extractMiddle(originalTitles[idx], prefix, suffix),
+            newNum: formatNumber(currentStart + idx, currentPad),
+        }));
+
+        const conflicts = checkRenumberCollisions(prefix, suffix, currentPad, currentStart);
+        const canRevert = state.working.some((item, idx) => item.questionTitle !== originalTitles[idx]);
+
+        body.innerHTML = `
+            <div class="qa-renumber-pattern">
+                <span>Detected pattern:</span>
+                <code title="${escapeHtml(prefix)}">${escapeHtml(truncateMiddle(prefix, 42))}</code>
+                <span class="qa-renumber-num-slot">[N]</span>
+                <code title="${escapeHtml(suffix)}">${escapeHtml(truncateMiddle(suffix, 20)) || '(none)'}</code>
+            </div>
+
+            <div class="qa-renumber-controls">
+                <div class="qa-field-stack">
+                    <label>Start #</label>
+                    <input type="number" id="qa-renumber-start" min="0" value="${currentStart}">
+                </div>
+                <button class="qa-btn-sm qa-secondary" id="qa-renumber-smart-start">
+                    ✨ Continue from existing (start at ${suggestedStart})
+                </button>
+                <div class="qa-field-stack">
+                    <label>Pad width (0 = none)</label>
+                    <input type="number" id="qa-renumber-pad" min="0" value="${currentPad}">
+                </div>
+            </div>
+
+            ${conflicts.length ? `
+            <div class="qa-renumber-collision-warning">
+                ⚠️ <strong>${conflicts.length}</strong> conflict${conflicts.length !== 1 ? 's' : ''} detected —
+                these new titles already exist elsewhere in your extracted data:
+                ${conflicts.slice(0, 5).map(c => `
+                    <div class="qa-renumber-collision-item">
+                        • New <strong>"${escapeHtml(c.newTitle)}"</strong> would duplicate Post ${escapeHtml(c.collidesWith.postID)}
+                    </div>`).join('')}
+                ${conflicts.length > 5 ? `<div class="qa-renumber-collision-item">…and ${conflicts.length - 5} more</div>` : ''}
+            </div>` : ''}
+
+            <div class="qa-renumber-preview">
+                <div class="qa-renumber-preview-title">Preview (${rows.length} question${rows.length !== 1 ? 's' : ''})</div>
+                <div id="qa-renumber-preview-list">
+                    ${rows.map(r => `
+                        <div class="qa-renumber-row">
+                            <span class="qa-renumber-row-idx">#${r.idx + 1}</span>
+                            <span class="qa-renumber-row-post">Post ${escapeHtml(r.postID)}</span>
+                            <span class="qa-renumber-row-nums">
+                                <span class="qa-renumber-row-old">${escapeHtml(r.oldNum)}</span>
+                                <span class="qa-renumber-row-arrow">→</span>
+                                <span class="qa-renumber-row-new">${escapeHtml(r.newNum)}</span>
+                            </span>
+                        </div>`).join('')}
+                </div>
+            </div>
+
+            <div class="qa-renumber-actions">
+                <button class="qa-btn-sm qa-secondary" id="qa-renumber-revert" ${canRevert ? '' : 'disabled'}>↩ Revert Titles</button>
+                <button class="qa-btn qa-btn-start" id="qa-renumber-apply">Apply Renumbering</button>
+            </div>
+        `;
+    }
+
     /* ---- Hide tab helpers ---- */
     function computeTagOptions() {
         const tagSets = state.working.map(item =>
@@ -979,16 +1333,14 @@
         const { total } = computeStats();
         q('#qa-record-count').textContent = `${total} record${total !== 1 ? 's' : ''}`;
         q('#qa-range-to').value = total || '';
-        q('#qa-undo-btn').disabled    = state.history.length === 0;
+        q('#qa-undo-btn').disabled = state.history.length === 0;
         q('#qa-undo-btn').style.opacity = state.history.length === 0 ? '0.5' : '1';
         updateProgressUI();
     }
 
     function switchTab(tabName) {
-        overlayEl.querySelectorAll('.qa-tab-btn')
-            .forEach(b => b.classList.toggle('qa-active', b.dataset.tab === tabName));
-        overlayEl.querySelectorAll('.qa-tab-panel')
-            .forEach(p => p.classList.toggle('qa-active', p.dataset.panel === tabName));
+        overlayEl.querySelectorAll('.qa-tab-btn').forEach(b => b.classList.toggle('qa-active', b.dataset.tab === tabName));
+        overlayEl.querySelectorAll('.qa-tab-panel').forEach(p => p.classList.toggle('qa-active', p.dataset.panel === tabName));
         q('#qa-toolbar').classList.toggle('qa-hidden', tabName === 'run' || tabName === 'hide');
     }
 
@@ -1013,6 +1365,10 @@
         state.stopRequested          = false;
         state.consecutiveFailures    = 0;
         state.consecutiveAuthFailures = 0;
+        state.renumberBaseline       = null;
+        state.renumberDetectionFailReason = null;
+        state.renumberCurrentStart   = null;
+        state.renumberCurrentPad     = null;
 
         if (!overlayEl) overlayEl = buildModal();
         wireModalEvents();
@@ -1022,6 +1378,7 @@
         q('#qa-simple-feed').classList.add('qa-active');
         q('#qa-log-console').classList.remove('qa-active');
         q('#qa-view-toggle').textContent = '🔧 Technical Log';
+        q('#qa-renumber-panel').classList.add('qa-hidden');
         hideBanner();
         initHideForm();
         updateRunButtons();
@@ -1168,7 +1525,80 @@
 
             renderAll();
             showToast(`Sliced to records ${from}–${to} (${state.working.length} kept).`);
+
+            // Fresh slice — recapture the Smart Renumber baseline and auto-open only if a pattern is found
+            state.renumberCurrentStart = null;
+            state.renumberCurrentPad = null;
+            openRenumberPanel(true, true);
         };
+
+        /* Smart Renumber */
+        q('#qa-renumber-open').onclick = () => {
+            openRenumberPanel(false, false);
+        };
+
+        const renumberPanel = q('#qa-renumber-panel');
+
+        q('#qa-renumber-close').onclick = () => {
+            renumberPanel.classList.add('qa-hidden');
+        };
+
+        q('#qa-renumber-redetect').onclick = () => {
+            state.renumberCurrentStart = null;
+            state.renumberCurrentPad = null;
+            openRenumberPanel(true, false);
+            showToast('🔄 Pattern re-detected from current titles.');
+        };
+
+        renumberPanel.addEventListener('input', (e) => {
+            if (e.target.id === 'qa-renumber-start') {
+                const val = parseInt(e.target.value, 10);
+                state.renumberCurrentStart = isNaN(val) ? 0 : val;
+                renderRenumberPanel();
+                const input = q('#qa-renumber-start');
+                if (input) { input.focus(); input.select(); }
+            }
+            if (e.target.id === 'qa-renumber-pad') {
+                const val = parseInt(e.target.value, 10);
+                state.renumberCurrentPad = isNaN(val) ? 0 : val;
+                renderRenumberPanel();
+                const input = q('#qa-renumber-pad');
+                if (input) { input.focus(); input.select(); }
+            }
+        });
+
+        renumberPanel.addEventListener('click', (e) => {
+            if (e.target.id === 'qa-renumber-smart-start') {
+                const { prefix, suffix } = state.renumberBaseline;
+                state.renumberCurrentStart = suggestSmartStart(prefix, suffix);
+                renderRenumberPanel();
+            }
+
+            if (e.target.id === 'qa-renumber-revert') {
+                revertRenumbering();
+                renderAll();
+                renderRenumberPanel();
+                showToast('↩ Reverted to pre-renumber titles.');
+            }
+
+            if (e.target.id === 'qa-renumber-apply') {
+                const { prefix, suffix, defaultPad } = state.renumberBaseline;
+                const start = state.renumberCurrentStart != null ? state.renumberCurrentStart : suggestSmartStart(prefix, suffix);
+                const pad   = state.renumberCurrentPad   != null ? state.renumberCurrentPad   : defaultPad;
+                const conflicts = checkRenumberCollisions(prefix, suffix, pad, start);
+
+                if (conflicts.length) {
+                    if (!confirm(`⚠️ ${conflicts.length} conflict(s) detected — this numbering would duplicate titles that already exist elsewhere in your extracted data. Apply anyway?`)) return;
+                } else {
+                    if (!confirm(`Renumber ${state.working.length} question title(s) starting at ${start}?`)) return;
+                }
+
+                applyRenumbering(start, pad);
+                renderAll();
+                renderRenumberPanel();
+                showToast(`✅ Renumbered ${state.working.length} title(s) starting at ${start}.`);
+            }
+        });
 
         /* Bulk tag */
         q('#qa-bulk-add').onclick = () => {
@@ -1218,6 +1648,7 @@
             state.working       = deepClone(state.original);
             state.itemStatus    = {};
             state.lockNonFailed = false;
+            resetRenumberState(true);
             renderAll();
             showToast('Reset to original extracted data.');
         };
@@ -1594,7 +2025,7 @@
     }
 
     /* ============================================================
-       FAB — with version chip
+       FAB
     ============================================================ */
     function addFab() {
         const table = document.getElementById('quickedittable');

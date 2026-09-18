@@ -1,9 +1,11 @@
-// @toolkit-version 7.0
+// @toolkit-version 8.1
 // GATE Overflow Quickedit Toolkit — Remote Payload
 // Fetched & executed by the Loader userscript. Not meant to be installed directly in Tampermonkey.
 
 (function () {
     'use strict';
+
+    const TOOLKIT_VERSION = '8.1';
 
     /* ============================================================
        STATE
@@ -12,8 +14,9 @@
         original: [],
         working: [],
         history: [],
-        itemStatus: {},          // idx -> 'success' | 'failed'  (absent = not yet attempted)
+        itemStatus: {},
         lockNonFailed: false,
+        hasCompletedRun: false,
         isRunning: false,
         isPaused: false,
         stopRequested: false,
@@ -22,6 +25,8 @@
         minDelay: 10,
         maxDelay: 15,
     };
+
+    const HIDE_DEFAULTS_KEY = 'qa_hide_defaults_v1';
 
     /* ============================================================
        STYLES
@@ -60,12 +65,28 @@
         background: var(--qa-blue); color: #fff; border: none; border-radius: 980px;
         padding: 14px 22px; font-size: 15px; font-weight: 600; font-family: var(--qa-font);
         box-shadow: 0 4px 14px rgba(0,0,0,0.18); cursor: pointer; transition: all 0.2s ease;
+        display: inline-flex; align-items: center; gap: 6px;
     }
     #qa-extract-fab:hover:not(:disabled) {
         background: var(--qa-blue-hover); transform: translateY(-1px);
         box-shadow: 0 6px 18px rgba(0,0,0,0.22);
     }
     #qa-extract-fab:disabled { background: #c7c7cc; cursor: not-allowed; box-shadow: none; }
+
+    .qa-version-chip {
+        display: inline-block; font-size: 10px; font-weight: 700;
+        background: rgba(255,255,255,0.22); color: #fff;
+        border-radius: 999px; padding: 2px 8px;
+        letter-spacing: 0.02em; vertical-align: middle; line-height: 1.6;
+        flex-shrink: 0;
+    }
+    .qa-header-version {
+        display: inline-flex; align-items: center;
+        font-size: 10.5px; font-weight: 600; color: var(--qa-text-secondary);
+        background: var(--qa-bg); border: 1px solid var(--qa-border);
+        border-radius: 999px; padding: 2px 10px; margin-left: 10px;
+        letter-spacing: 0.01em; vertical-align: middle;
+    }
 
     #qa-modal-overlay {
         position: fixed; inset: 0; background: rgba(0,0,0,0.35);
@@ -90,7 +111,10 @@
         padding: 16px 22px; border-bottom: 1px solid var(--qa-border);
         background: var(--qa-bg-secondary); flex-shrink: 0;
     }
-    #qa-modal-header h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--qa-text); }
+    #qa-modal-header h2 {
+        margin: 0; font-size: 17px; font-weight: 600; color: var(--qa-text);
+        display: flex; align-items: center;
+    }
     #qa-modal-close {
         width: 30px; height: 30px; border-radius: 50%; border: none;
         background: #e8e8ed; color: var(--qa-text-secondary); font-size: 16px;
@@ -99,12 +123,16 @@
     }
     #qa-modal-close:hover { background: #d8d8dd; }
 
-    #qa-tabs { display: flex; gap: 6px; padding: 10px 22px 0; background: var(--qa-bg-secondary); flex-shrink: 0; }
+    #qa-tabs {
+        display: flex; gap: 6px; padding: 10px 22px 0;
+        background: var(--qa-bg-secondary); flex-shrink: 0; flex-wrap: wrap;
+    }
     .qa-tab-btn {
         border: none; background: transparent; padding: 8px 16px; font-size: 14px; font-weight: 500;
         color: var(--qa-text-secondary); cursor: pointer; border-radius: 8px 8px 0 0; transition: color 0.15s ease;
     }
     .qa-tab-btn.qa-active { color: var(--qa-blue); background: var(--qa-bg); }
+    .qa-tab-btn.qa-tab-locked { opacity: 0.55; }
 
     #qa-toolbar {
         display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
@@ -137,14 +165,19 @@
     .qa-btn-sm.qa-secondary:hover { background: #77777c; }
     .qa-btn-sm.qa-danger { background: var(--qa-red); }
     .qa-btn-sm.qa-danger:hover { background: #e0342b; }
-    .qa-checkbox-wrap { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--qa-text-secondary); height: 30px; }
+    .qa-checkbox-wrap {
+        display: flex; align-items: center; gap: 4px;
+        font-size: 12px; color: var(--qa-text-secondary); height: 30px;
+    }
     #qa-toolbar-right { margin-left: auto; display: flex; gap: 8px; align-self: flex-end; }
 
-    #qa-modal-body { flex: 1; overflow: auto; padding: 20px 22px; background: var(--qa-bg); position: relative; }
+    #qa-modal-body {
+        flex: 1; overflow: auto; padding: 20px 22px;
+        background: var(--qa-bg); position: relative;
+    }
     .qa-tab-panel { display: none; height: 100%; }
     .qa-tab-panel.qa-active { display: flex; flex-direction: column; }
 
-    /* Lock/status bar */
     .qa-lock-bar {
         display: flex; align-items: center; justify-content: space-between; gap: 10px;
         background: #fff8e6; border: 1px solid #ffe1a8; color: #7a5200;
@@ -153,7 +186,6 @@
     .qa-lock-bar.qa-hidden { display: none; }
     .qa-lock-bar-text strong { font-weight: 700; }
 
-    /* Cards */
     .qa-card-list { display: flex; flex-direction: column; gap: 10px; }
     .qa-card {
         border: 1px solid var(--qa-border); border-radius: 12px; padding: 14px 16px;
@@ -169,7 +201,10 @@
     }
     .qa-card.qa-card-locked .qa-edit-input:hover { background: #e9e9ec; border-color: transparent; }
 
-    .qa-card-meta { position: absolute; top: 10px; right: 14px; display: flex; align-items: center; gap: 6px; }
+    .qa-card-meta {
+        position: absolute; top: 10px; right: 14px;
+        display: flex; align-items: center; gap: 6px;
+    }
     .qa-card-index { font-size: 11px; color: var(--qa-text-secondary); font-weight: 600; }
     .qa-status-badge {
         font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
@@ -178,7 +213,10 @@
     .qa-status-badge.qa-status-failed { background: #ffdcda; color: #c22b22; }
     .qa-status-badge.qa-status-locked { background: #e4e4e8; color: #6e6e73; }
 
-    .qa-card-row { display: flex; gap: 10px; margin-bottom: 8px; font-size: 13.5px; align-items: flex-start; }
+    .qa-card-row {
+        display: flex; gap: 10px; margin-bottom: 8px;
+        font-size: 13.5px; align-items: flex-start;
+    }
     .qa-card-row:last-child { margin-bottom: 0; }
     .qa-card-label { color: var(--qa-text-secondary); min-width: 70px; font-weight: 500; padding-top: 6px; }
     .qa-card-value { color: var(--qa-text); word-break: break-word; flex: 1; }
@@ -197,7 +235,8 @@
 
     .qa-tag-chip {
         display: inline-block; background: #e8f0fe; color: var(--qa-blue);
-        border-radius: 5px; padding: 1px 7px; font-size: 11px; margin: 2px 3px 0 0; font-weight: 500;
+        border-radius: 5px; padding: 1px 7px; font-size: 11px;
+        margin: 2px 3px 0 0; font-weight: 500;
     }
     .qa-chip-preview { margin-top: 4px; }
 
@@ -209,7 +248,8 @@
     #qa-record-count { font-size: 13px; color: var(--qa-text-secondary); }
     #qa-copy-btn {
         background: var(--qa-blue); color: #fff; border: none; border-radius: 980px;
-        padding: 9px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s ease;
+        padding: 9px 20px; font-size: 14px; font-weight: 600;
+        cursor: pointer; transition: background 0.15s ease;
     }
     #qa-copy-btn:hover { background: var(--qa-blue-hover); }
     #qa-copy-btn.qa-copied { background: var(--qa-green); }
@@ -249,15 +289,24 @@
     .qa-btn-stop:hover:not(:disabled) { background: #e0342b; }
 
     .qa-progress-wrap { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
-    .qa-progress-track { width: 100%; height: 6px; background: #e8e8ed; border-radius: 999px; overflow: hidden; }
+    .qa-progress-track {
+        width: 100%; height: 6px; background: #e8e8ed;
+        border-radius: 999px; overflow: hidden;
+    }
     .qa-progress-fill {
         height: 100%; width: 0%; border-radius: 999px;
         background: linear-gradient(90deg, var(--qa-blue), #5ac8fa);
         transition: width 0.4s cubic-bezier(0.2,0.8,0.2,1);
         background-size: 200% 100%; animation: qa-shimmer 2s linear infinite;
     }
-    @keyframes qa-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-    .qa-progress-meta { display: flex; justify-content: space-between; font-size: 13px; color: var(--qa-text-secondary); }
+    @keyframes qa-shimmer {
+        0%   { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+    }
+    .qa-progress-meta {
+        display: flex; justify-content: space-between;
+        font-size: 13px; color: var(--qa-text-secondary);
+    }
 
     .qa-stat-row { display: flex; gap: 10px; flex-shrink: 0; }
     .qa-stat-chip {
@@ -267,15 +316,22 @@
     .qa-stat-chip .qa-stat-num { font-size: 20px; font-weight: 700; color: var(--qa-text); display: block; }
     .qa-stat-chip .qa-stat-label { font-size: 11.5px; color: var(--qa-text-secondary); }
     .qa-stat-chip.qa-success .qa-stat-num { color: var(--qa-green); }
-    .qa-stat-chip.qa-failed .qa-stat-num { color: var(--qa-red); }
+    .qa-stat-chip.qa-failed  .qa-stat-num { color: var(--qa-red); }
 
-    .qa-run-banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; font-size: 13.5px; flex-shrink: 0; }
+    .qa-run-banner {
+        display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+        border-radius: 12px; font-size: 13.5px; flex-shrink: 0;
+    }
     .qa-run-banner.qa-hidden { display: none; }
     .qa-banner-icon { font-size: 18px; flex-shrink: 0; }
     .qa-banner-text { flex: 1; line-height: 1.4; }
     .qa-banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
-    .qa-banner-auth, .qa-banner-generic { background: #fdecea; border: 1px solid #f5c2c0; color: #86201b; }
-    .qa-banner-success { background: #e7f8ec; border: 1px solid #b7ebc6; color: #166534; }
+    .qa-banner-auth, .qa-banner-generic {
+        background: #fdecea; border: 1px solid #f5c2c0; color: #86201b;
+    }
+    .qa-banner-success {
+        background: #e7f8ec; border: 1px solid #b7ebc6; color: #166534;
+    }
 
     #qa-run-views { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .qa-run-view { display: none; flex: 1; overflow-y: auto; }
@@ -287,31 +343,81 @@
         margin-bottom: 6px; background: var(--qa-bg-secondary);
     }
     .qa-feed-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
-    .qa-feed-num { font-size: 11px; font-weight: 700; color: var(--qa-text-secondary); }
+    .qa-feed-num    { font-size: 11px; font-weight: 700; color: var(--qa-text-secondary); }
     .qa-feed-postid { font-size: 11px; color: var(--qa-text-secondary); }
-    .qa-feed-overall { margin-left: auto; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
-    .qa-feed-overall.qa-ok { background: #d3f5df; color: #0a7d33; }
+    .qa-feed-overall {
+        margin-left: auto; font-size: 10.5px; font-weight: 700;
+        padding: 2px 8px; border-radius: 999px;
+    }
+    .qa-feed-overall.qa-ok   { background: #d3f5df; color: #0a7d33; }
     .qa-feed-overall.qa-fail { background: #ffe3b3; color: #8a5a00; }
-    .qa-feed-body { display: flex; flex-direction: column; gap: 5px; }
-    .qa-feed-item { display: flex; gap: 8px; align-items: flex-start; }
-    .qa-feed-icon { font-size: 12.5px; line-height: 1.4; flex-shrink: 0; }
-    .qa-feed-text { flex: 1; min-width: 0; }
-    .qa-feed-title-text { font-size: 12.5px; color: var(--qa-text); font-weight: 500; word-break: break-word; line-height: 1.35; }
-    .qa-feed-tags { margin-bottom: 1px; line-height: 1.2; }
-    .qa-feed-sub { font-size: 11px; color: var(--qa-text-secondary); margin-top: 1px; }
+    .qa-feed-body  { display: flex; flex-direction: column; gap: 5px; }
+    .qa-feed-item  { display: flex; gap: 8px; align-items: flex-start; }
+    .qa-feed-icon  { font-size: 12.5px; line-height: 1.4; flex-shrink: 0; }
+    .qa-feed-text  { flex: 1; min-width: 0; }
+    .qa-feed-title-text {
+        font-size: 12.5px; color: var(--qa-text); font-weight: 500;
+        word-break: break-word; line-height: 1.35;
+    }
+    .qa-feed-tags  { margin-bottom: 1px; line-height: 1.2; }
+    .qa-feed-sub   { font-size: 11px; color: var(--qa-text-secondary); margin-top: 1px; }
     .qa-feed-sub-error { color: var(--qa-red); font-weight: 600; }
 
     #qa-log-console {
-        background: #1d1d1f; color: #d1d1d6; border-radius: 12px; padding: 12px 14px;
-        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.7;
-        height: 100%; box-sizing: border-box;
+        background: #1d1d1f; color: #d1d1d6; border-radius: 12px;
+        padding: 12px 14px; font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12.5px; line-height: 1.7; height: 100%; box-sizing: border-box;
     }
-    .qa-log-line { white-space: pre-wrap; word-break: break-word; }
-    .qa-log-info { color: #8e8e93; }
+    .qa-log-line    { white-space: pre-wrap; word-break: break-word; }
+    .qa-log-info    { color: #8e8e93; }
     .qa-log-success { color: #32d74b; }
-    .qa-log-error { color: #ff453a; }
-    .qa-log-warn { color: #ffd60a; }
-    .qa-log-done { color: #64d2ff; font-weight: 700; }
+    .qa-log-error   { color: #ff453a; }
+    .qa-log-warn    { color: #ffd60a; }
+    .qa-log-done    { color: #64d2ff; font-weight: 700; }
+
+    /* ---- Hide Questions tab ---- */
+    .qa-hide-locked {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        text-align: center; gap: 10px; padding: 70px 20px;
+        color: var(--qa-text-secondary); flex: 1;
+    }
+    .qa-hide-locked.qa-hidden { display: none; }
+    .qa-hide-locked-icon { font-size: 34px; }
+    .qa-hide-locked-text {
+        max-width: 440px; font-size: 13.5px; line-height: 1.55;
+    }
+
+    #qa-hide-form-wrap.qa-hidden { display: none; }
+    .qa-hide-intro h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; color: var(--qa-text); }
+    .qa-hide-intro p  { margin: 0 0 16px; font-size: 12.5px; color: var(--qa-text-secondary); line-height: 1.55; }
+    .qa-hide-intro code {
+        background: #ececee; padding: 1px 6px; border-radius: 5px;
+        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px;
+    }
+
+    .qa-hide-grid {
+        display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 18px;
+        background: var(--qa-bg-secondary); border: 1px solid var(--qa-border);
+        border-radius: 12px; padding: 16px;
+    }
+    .qa-hide-grid .qa-field-stack { gap: 5px; }
+    .qa-hide-grid .qa-field-stack label {
+        font-size: 11px; text-transform: none; letter-spacing: 0;
+        font-weight: 600; color: var(--qa-text);
+    }
+    .qa-hide-grid input, .qa-hide-grid select {
+        border: 1px solid var(--qa-border); border-radius: 8px; padding: 7px 10px;
+        font-size: 13px; font-family: var(--qa-font); min-width: 140px; box-sizing: border-box;
+    }
+    .qa-hide-grid select { min-width: 240px; }
+    .qa-hide-checkbox-row {
+        display: flex; align-items: center; gap: 6px; font-size: 13px;
+        color: var(--qa-text); align-self: flex-end; height: 34px;
+    }
+
+    .qa-hide-actions { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+    #qa-hide-result { margin-top: 4px; }
+    #qa-hide-result.qa-hidden { display: none; }
     `;
 
     function injectStyle() {
@@ -327,7 +433,10 @@
     function randomBetween(min, max) { return Math.random() * (max - min) + min; }
     function escapeHtml(str) {
         if (str == null) return '';
-        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
     }
     function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
@@ -398,9 +507,9 @@
         for (let i = 1; i < table.rows.length; i++) {
             try {
                 const cells = table.rows[i].cells;
-                const postID = cells[1].innerText.trim();
+                const postID        = cells[1].innerText.trim();
                 const questionTitle = cells[3].lastChild.firstChild.value;
-                const tag = cells[5].firstChild.firstChild.value;
+                const tag           = cells[5].firstChild.firstChild.value;
                 list.push({ postID, questionTitle, tag });
             } catch (e) {
                 console.warn('Skipping row', i, e);
@@ -410,7 +519,7 @@
     }
 
     /* ============================================================
-       CARD RENDERING (editable, with lock/fail states)
+       CARD RENDERING
     ============================================================ */
     function renderTagChips(tagString) {
         const tags = (tagString || '').split(',').map(t => t.trim()).filter(Boolean);
@@ -427,7 +536,7 @@
         }
 
         return `<div class="qa-card-list">` + data.map((item, idx) => {
-            const status = state.itemStatus[idx];
+            const status   = state.itemStatus[idx];
             const isFailed = status === 'failed';
             const isLocked = state.lockNonFailed && status === 'success';
             const disabledAttr = isLocked ? 'disabled' : '';
@@ -482,13 +591,14 @@
                 <div id="qa-toast"></div>
 
                 <div id="qa-modal-header">
-                    <h2>Quickedit Toolkit</h2>
+                    <h2>Quickedit Toolkit <span class="qa-header-version">v${TOOLKIT_VERSION}</span></h2>
                     <button id="qa-modal-close" title="Close">&#10005;</button>
                 </div>
 
                 <div id="qa-tabs">
                     <button class="qa-tab-btn qa-active" data-tab="visual">Visualized</button>
                     <button class="qa-tab-btn" data-tab="run">Run Updates</button>
+                    <button class="qa-tab-btn" data-tab="hide" id="qa-tab-hide-btn">🔒 Hide Questions</button>
                 </div>
 
                 <div id="qa-toolbar">
@@ -567,7 +677,7 @@
                                 <div class="qa-run-buttons">
                                     <button class="qa-btn qa-btn-start" id="qa-run-start">▶ Start</button>
                                     <button class="qa-btn qa-btn-pause" id="qa-run-pause" disabled>⏸ Pause</button>
-                                    <button class="qa-btn qa-btn-stop" id="qa-run-stop" disabled>■ Stop</button>
+                                    <button class="qa-btn qa-btn-stop"  id="qa-run-stop"  disabled>■ Stop</button>
                                 </div>
                             </div>
 
@@ -602,6 +712,68 @@
                                 <div id="qa-simple-feed" class="qa-run-view qa-active"></div>
                                 <div id="qa-log-console" class="qa-run-view"></div>
                             </div>
+                        </div>
+                    </div>
+
+                    <div class="qa-tab-panel" data-panel="hide">
+                        <div id="qa-hide-locked-msg" class="qa-hide-locked">
+                            <div class="qa-hide-locked-icon">🔒</div>
+                            <div class="qa-hide-locked-text">
+                                Complete a full update run in the <strong>Run Updates</strong> tab first.
+                                Once done, you can hide the questions you just added/updated from public view.
+                            </div>
+                        </div>
+
+                        <div id="qa-hide-form-wrap" class="qa-hidden">
+                            <div class="qa-hide-intro">
+                                <h3>Hide Updated Questions</h3>
+                                <p>
+                                    Sends a request to <code>/create-st</code> with <code>onlyhideqns=1</code>
+                                    to hide questions under the selected tag. The tag list is pulled live
+                                    from your updated records.
+                                </p>
+                            </div>
+
+                            <div class="qa-hide-grid">
+                                <div class="qa-field-stack">
+                                    <label>Title (optional)</label>
+                                    <input type="text" id="qa-hide-title" placeholder="">
+                                </div>
+                                <div class="qa-field-stack">
+                                    <label>Tag Name *</label>
+                                    <select id="qa-hide-tagname"></select>
+                                </div>
+                                <div class="qa-field-stack">
+                                    <label>Category</label>
+                                    <input type="number" id="qa-hide-category" value="0">
+                                </div>
+                                <div class="qa-field-stack">
+                                    <label>Tag (id)</label>
+                                    <input type="number" id="qa-hide-tag" value="0">
+                                </div>
+                                <div class="qa-field-stack">
+                                    <label>User ID *</label>
+                                    <input type="text" id="qa-hide-userid" placeholder="e.g. 181161">
+                                </div>
+                                <div class="qa-field-stack">
+                                    <label>Count *</label>
+                                    <input type="number" id="qa-hide-count" min="1">
+                                </div>
+                                <div class="qa-field-stack">
+                                    <label>Start</label>
+                                    <input type="number" id="qa-hide-start" min="1" value="1">
+                                </div>
+                                <div class="qa-hide-checkbox-row">
+                                    <input type="checkbox" id="qa-hide-onlyhideqns" checked>
+                                    Only hide questions (recommended)
+                                </div>
+                            </div>
+
+                            <div class="qa-hide-actions">
+                                <button class="qa-btn qa-btn-start" id="qa-hide-send">🙈 Hide Questions</button>
+                            </div>
+
+                            <div id="qa-hide-result" class="qa-run-banner qa-hidden"></div>
                         </div>
                     </div>
                 </div>
@@ -681,22 +853,143 @@
         };
     }
 
+    /* ---- Hide tab helpers ---- */
+    function computeTagOptions() {
+        const tagSets = state.working.map(item =>
+            new Set((item.tag || '').split(',').map(t => t.trim()).filter(Boolean))
+        );
+        const allTagsSet = new Set();
+        tagSets.forEach(s => s.forEach(t => allTagsSet.add(t)));
+        const allTags = [...allTagsSet].sort();
+        const commonTags = tagSets.length ? allTags.filter(t => tagSets.every(s => s.has(t))) : [];
+        return { allTags, commonTags };
+    }
+
+    function populateHideTagOptions(preserveSelection) {
+        const select = q('#qa-hide-tagname');
+        if (!select) return;
+        const prevValue = preserveSelection ? select.value : null;
+        const { allTags, commonTags } = computeTagOptions();
+
+        let html = '';
+        if (commonTags.length) {
+            html += `<optgroup label="Common to all records (recommended)">`;
+            html += commonTags.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+            html += `</optgroup>`;
+        }
+        const otherTags = allTags.filter(t => !commonTags.includes(t));
+        if (otherTags.length) {
+            html += `<optgroup label="Other tags used">`;
+            html += otherTags.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+            html += `</optgroup>`;
+        }
+        if (!allTags.length) html = `<option value="">No tags found</option>`;
+
+        select.innerHTML = html;
+        if (prevValue && allTags.includes(prevValue)) select.value = prevValue;
+        else if (commonTags.length) select.value = commonTags[0];
+    }
+
+    function loadHideDefaults() {
+        try { return JSON.parse(localStorage.getItem(HIDE_DEFAULTS_KEY)) || {}; }
+        catch (e) { return {}; }
+    }
+
+    function saveHideDefaults(vals) {
+        try { localStorage.setItem(HIDE_DEFAULTS_KEY, JSON.stringify(vals)); }
+        catch (e) { /* ignore */ }
+    }
+
+    function tryDetectUserId() {
+        try {
+            const el = document.querySelector('input[name="userid"], input#userid');
+            if (el && el.value) return el.value;
+        } catch (e) { /* ignore */ }
+        return null;
+    }
+
+    function initHideForm() {
+        const saved = loadHideDefaults();
+        q('#qa-hide-title').value    = saved.title    || '';
+        q('#qa-hide-category').value = saved.category ?? 0;
+        q('#qa-hide-tag').value      = saved.tag      ?? 0;
+        q('#qa-hide-userid').value   = saved.userid   || tryDetectUserId() || '';
+        q('#qa-hide-count').value    = saved.count    ?? (state.working.length || 60);
+        q('#qa-hide-start').value    = saved.start    ?? 1;
+        q('#qa-hide-onlyhideqns').checked = saved.onlyhideqns !== false;
+        populateHideTagOptions(false);
+        renderHideResult(undefined, true);
+    }
+
+    function updateHideTabAvailability() {
+        if (!overlayEl) return;
+        const tabBtn    = q('#qa-tab-hide-btn');
+        const lockedMsg = q('#qa-hide-locked-msg');
+        const formWrap  = q('#qa-hide-form-wrap');
+        if (!tabBtn) return;
+
+        const unlocked = state.hasCompletedRun;
+        tabBtn.classList.toggle('qa-tab-locked', !unlocked);
+        tabBtn.textContent = unlocked ? 'Hide Questions' : '🔒 Hide Questions';
+
+        if (lockedMsg && formWrap) {
+            lockedMsg.classList.toggle('qa-hidden', unlocked);
+            formWrap.classList.toggle('qa-hidden', !unlocked);
+        }
+
+        if (unlocked) populateHideTagOptions(true);
+    }
+
+    function renderHideResult(result, forceHide) {
+        const box = q('#qa-hide-result');
+        if (!box) return;
+
+        if (forceHide || result === undefined) {
+            box.className = 'qa-run-banner qa-hidden';
+            box.innerHTML = '';
+            return;
+        }
+        if (result === null) {
+            box.className = 'qa-run-banner';
+            box.classList.remove('qa-hidden');
+            box.innerHTML = `<span class="qa-banner-icon">⏳</span><span class="qa-banner-text">Sending request…</span>`;
+            return;
+        }
+
+        const cls  = result.ok ? 'qa-banner-success' : (result.isAuthError ? 'qa-banner-auth' : 'qa-banner-generic');
+        const icon = result.ok ? '✅' : (result.isAuthError ? '🔒' : '⚠️');
+        box.className = 'qa-run-banner ' + cls;
+        box.classList.remove('qa-hidden');
+        box.innerHTML = `
+            <span class="qa-banner-icon">${icon}</span>
+            <span class="qa-banner-text">
+                ${result.ok ? 'Hide request sent successfully.' : escapeHtml(result.message)}
+                <br><span style="opacity:0.75;font-size:12px;">
+                    HTTP ${result.status} · Please verify on the site that the questions are hidden as expected.
+                </span>
+            </span>
+        `;
+    }
+
     function renderAll() {
         q('#qa-cards-container').innerHTML = renderCards();
         renderLockBar();
+        updateHideTabAvailability();
 
         const { total } = computeStats();
         q('#qa-record-count').textContent = `${total} record${total !== 1 ? 's' : ''}`;
         q('#qa-range-to').value = total || '';
-        q('#qa-undo-btn').disabled = state.history.length === 0;
+        q('#qa-undo-btn').disabled    = state.history.length === 0;
         q('#qa-undo-btn').style.opacity = state.history.length === 0 ? '0.5' : '1';
         updateProgressUI();
     }
 
     function switchTab(tabName) {
-        overlayEl.querySelectorAll('.qa-tab-btn').forEach(b => b.classList.toggle('qa-active', b.dataset.tab === tabName));
-        overlayEl.querySelectorAll('.qa-tab-panel').forEach(p => p.classList.toggle('qa-active', p.dataset.panel === tabName));
-        q('#qa-toolbar').classList.toggle('qa-hidden', tabName === 'run');
+        overlayEl.querySelectorAll('.qa-tab-btn')
+            .forEach(b => b.classList.toggle('qa-active', b.dataset.tab === tabName));
+        overlayEl.querySelectorAll('.qa-tab-panel')
+            .forEach(p => p.classList.toggle('qa-active', p.dataset.panel === tabName));
+        q('#qa-toolbar').classList.toggle('qa-hidden', tabName === 'run' || tabName === 'hide');
     }
 
     function openModal() {
@@ -709,26 +1002,28 @@
         const data = extractData();
         console.log(data);
 
-        state.original = data;
-        state.working = deepClone(data);
-        state.history = [];
-        state.itemStatus = {};
-        state.lockNonFailed = false;
-        state.isRunning = false;
-        state.isPaused = false;
-        state.stopRequested = false;
-        state.consecutiveFailures = 0;
+        state.original               = data;
+        state.working                = deepClone(data);
+        state.history                = [];
+        state.itemStatus             = {};
+        state.lockNonFailed          = false;
+        state.hasCompletedRun        = false;
+        state.isRunning              = false;
+        state.isPaused               = false;
+        state.stopRequested          = false;
+        state.consecutiveFailures    = 0;
         state.consecutiveAuthFailures = 0;
 
         if (!overlayEl) overlayEl = buildModal();
         wireModalEvents();
         renderAll();
-        q('#qa-log-console').innerHTML = '';
-        q('#qa-simple-feed').innerHTML = '';
+        q('#qa-log-console').innerHTML  = '';
+        q('#qa-simple-feed').innerHTML  = '';
         q('#qa-simple-feed').classList.add('qa-active');
         q('#qa-log-console').classList.remove('qa-active');
         q('#qa-view-toggle').textContent = '🔧 Technical Log';
         hideBanner();
+        initHideForm();
         updateRunButtons();
         switchTab('visual');
 
@@ -744,7 +1039,14 @@
 
     function wireModalEvents() {
         overlayEl.querySelectorAll('.qa-tab-btn').forEach(btn => {
-            btn.onclick = () => switchTab(btn.dataset.tab);
+            btn.onclick = () => {
+                if (btn.dataset.tab === 'hide' && !state.hasCompletedRun) {
+                    showToast('🔒 Complete a full update run first to unlock this step.');
+                    return;
+                }
+                switchTab(btn.dataset.tab);
+                if (btn.dataset.tab === 'hide') populateHideTagOptions(true);
+            };
         });
 
         q('#qa-modal-close').onclick = closeModal;
@@ -756,7 +1058,6 @@
             if (e.target.matches('.qa-edit-input')) e.target.dataset.prev = e.target.value;
         });
 
-        // Live chip preview while typing
         visualPanel.addEventListener('input', (e) => {
             if (e.target.matches('.qa-edit-input[data-field="tag"]')) {
                 const preview = overlayEl.querySelector(`[data-chip-preview="${e.target.dataset.idx}"]`);
@@ -764,10 +1065,9 @@
             }
         });
 
-        // Committed edit — reverts a "success" item back to pending so it gets retried
         visualPanel.addEventListener('change', (e) => {
             if (!e.target.matches('.qa-edit-input') || e.target.disabled) return;
-            const idx = parseInt(e.target.dataset.idx, 10);
+            const idx   = parseInt(e.target.dataset.idx, 10);
             const field = e.target.dataset.field;
             const newVal = e.target.value;
             if (newVal === e.target.dataset.prev) return;
@@ -787,10 +1087,10 @@
 
         /* Find & Replace */
         q('#qa-fr-apply').onclick = () => {
-            const field = q('#qa-fr-field').value;
-            const find = q('#qa-fr-find').value;
+            const field      = q('#qa-fr-field').value;
+            const find       = q('#qa-fr-find').value;
             const replaceRaw = q('#qa-fr-replace').value;
-            const useRegex = q('#qa-fr-regex').checked;
+            const useRegex   = q('#qa-fr-regex').checked;
             const startNumStr = q('#qa-fr-startnum').value;
             const useAutoNumber = replaceRaw.includes('{{n}}') && startNumStr !== '';
             let counter = useAutoNumber ? parseInt(startNumStr, 10) : null;
@@ -809,7 +1109,6 @@
 
             state.working.forEach((item, idx) => {
                 let itemChanged = false;
-
                 const applyTo = (str) => {
                     if (typeof str !== 'string') return str;
                     let didMatch = false, result;
@@ -832,8 +1131,12 @@
                 };
 
                 if (field === 'questionTitle' || field === 'both') item.questionTitle = applyTo(item.questionTitle);
-                if (field === 'tag' || field === 'both') item.tag = applyTo(item.tag);
-                if (itemChanged) changedIndices.push(idx);
+                if (field === 'tag'           || field === 'both') item.tag           = applyTo(item.tag);
+
+                if (itemChanged) {
+                    changedIndices.push(idx);
+                    if (state.itemStatus[idx] === 'success') delete state.itemStatus[idx];
+                }
             });
 
             if (!changedIndices.length) {
@@ -841,7 +1144,6 @@
                 return showToast('No matches found — nothing changed.');
             }
 
-            resetRunProgress();
             renderAll();
             flashCards(changedIndices);
             showToast(`✅ Updated ${changedIndices.length} record${changedIndices.length !== 1 ? 's' : ''}.`);
@@ -850,13 +1152,20 @@
         /* Range slice */
         q('#qa-range-apply').onclick = () => {
             const from = parseInt(q('#qa-range-from').value, 10);
-            const to = parseInt(q('#qa-range-to').value, 10);
+            const to   = parseInt(q('#qa-range-to').value,   10);
             if (!from || !to || from < 1 || to < from || to > state.working.length)
                 return showToast(`⚠️ Enter a valid range between 1 and ${state.working.length}.`);
 
             pushHistory();
-            state.working = state.working.slice(from - 1, to);
-            resetRunProgress();
+            const oldStatus = state.itemStatus;
+            state.working   = state.working.slice(from - 1, to);
+
+            const newStatus = {};
+            for (let i = from - 1; i < to; i++) {
+                if (oldStatus[i]) newStatus[i - (from - 1)] = oldStatus[i];
+            }
+            state.itemStatus = newStatus;
+
             renderAll();
             showToast(`Sliced to records ${from}–${to} (${state.working.length} kept).`);
         };
@@ -867,11 +1176,13 @@
             if (!tag) return showToast('⚠️ Enter a tag name first.');
             pushHistory();
             let count = 0;
-            state.working.forEach(item => {
+            state.working.forEach((item, idx) => {
                 const tags = (item.tag || '').split(',').map(t => t.trim()).filter(Boolean);
-                if (!tags.includes(tag)) { tags.push(tag); item.tag = tags.join(','); count++; }
+                if (!tags.includes(tag)) {
+                    tags.push(tag); item.tag = tags.join(','); count++;
+                    if (state.itemStatus[idx] === 'success') delete state.itemStatus[idx];
+                }
             });
-            resetRunProgress();
             renderAll();
             showToast(`Added "${tag}" to ${count} record${count !== 1 ? 's' : ''}.`);
         };
@@ -881,11 +1192,13 @@
             if (!tag) return showToast('⚠️ Enter a tag name first.');
             pushHistory();
             let count = 0;
-            state.working.forEach(item => {
+            state.working.forEach((item, idx) => {
                 const tags = (item.tag || '').split(',').map(t => t.trim()).filter(Boolean);
-                if (tags.includes(tag)) { item.tag = tags.filter(t => t !== tag).join(','); count++; }
+                if (tags.includes(tag)) {
+                    item.tag = tags.filter(t => t !== tag).join(','); count++;
+                    if (state.itemStatus[idx] === 'success') delete state.itemStatus[idx];
+                }
             });
-            resetRunProgress();
             renderAll();
             showToast(`Removed "${tag}" from ${count} record${count !== 1 ? 's' : ''}.`);
         };
@@ -894,7 +1207,6 @@
         q('#qa-undo-btn').onclick = () => {
             if (!state.history.length) return;
             state.working = state.history.pop();
-            resetRunProgress();
             renderAll();
             showToast('↩ Undone.');
         };
@@ -903,8 +1215,9 @@
         q('#qa-reset-data').onclick = () => {
             if (!confirm('Discard all edits and restore the originally extracted data?')) return;
             pushHistory();
-            state.working = deepClone(state.original);
-            resetRunProgress();
+            state.working       = deepClone(state.original);
+            state.itemStatus    = {};
+            state.lockNonFailed = false;
             renderAll();
             showToast('Reset to original extracted data.');
         };
@@ -923,17 +1236,54 @@
         /* View toggle */
         q('#qa-view-toggle').onclick = () => {
             const feed = q('#qa-simple-feed');
-            const log = q('#qa-log-console');
+            const log  = q('#qa-log-console');
             const showingSimple = feed.classList.contains('qa-active');
             feed.classList.toggle('qa-active', !showingSimple);
-            log.classList.toggle('qa-active', showingSimple);
+            log.classList.toggle('qa-active',  showingSimple);
             q('#qa-view-toggle').textContent = showingSimple ? '🙂 Simple View' : '🔧 Technical Log';
         };
 
         /* Run controls */
         q('#qa-run-start').onclick = onStartRun;
         q('#qa-run-pause').onclick = onPauseResume;
-        q('#qa-run-stop').onclick = onStopRun;
+        q('#qa-run-stop').onclick  = onStopRun;
+
+        /* Hide Questions send */
+        q('#qa-hide-send').onclick = async () => {
+            const payload = {
+                title:        q('#qa-hide-title').value,
+                tagname:      q('#qa-hide-tagname').value,
+                category:     parseInt(q('#qa-hide-category').value, 10) || 0,
+                tag:          parseInt(q('#qa-hide-tag').value,      10) || 0,
+                userid:       q('#qa-hide-userid').value.trim(),
+                count:        parseInt(q('#qa-hide-count').value,    10) || 0,
+                start:        parseInt(q('#qa-hide-start').value,    10) || 1,
+                onlyhideqns:  q('#qa-hide-onlyhideqns').checked,
+            };
+
+            if (!payload.tagname) return showToast('⚠️ Select a tag name first.');
+            if (!payload.userid)  return showToast('⚠️ Enter a User ID first.');
+            if (!payload.count || payload.count < 1) return showToast('⚠️ Enter a valid count.');
+
+            saveHideDefaults(payload);
+
+            if (!confirm(
+                `This will send a LIVE request to hide up to ${payload.count} question(s) ` +
+                `tagged "${payload.tagname}" (starting at #${payload.start}) for User ID ${payload.userid}. Continue?`
+            )) return;
+
+            const btn = q('#qa-hide-send');
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Sending…';
+            renderHideResult(null);
+
+            const result = await sendHideRequest(payload);
+
+            btn.disabled = false;
+            btn.textContent = originalText;
+            renderHideResult(result);
+        };
     }
 
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
@@ -941,19 +1291,11 @@
     /* ============================================================
        RUN ENGINE
     ============================================================ */
-    function resetRunProgress() {
-        state.itemStatus = {};
-        state.lockNonFailed = false;
-        state.consecutiveFailures = 0;
-        state.consecutiveAuthFailures = 0;
-        if (overlayEl) { renderLockBar(); updateProgressUI(); }
-    }
-
     function appendLog(text, type = 'info') {
         if (!overlayEl) return;
-        const con = q('#qa-log-console');
+        const con  = q('#qa-log-console');
         const line = document.createElement('div');
-        line.className = `qa-log-line qa-log-${type}`;
+        line.className   = `qa-log-line qa-log-${type}`;
         line.textContent = text ? `[${new Date().toLocaleTimeString()}] ${text}` : '';
         con.appendChild(line);
         con.scrollTop = con.scrollHeight;
@@ -999,9 +1341,9 @@
     function showBanner(type, message) {
         const banner = q('#qa-run-banner');
         banner.className = 'qa-run-banner qa-banner-' + type;
-        const icon = type === 'auth' ? '🔒' : type === 'success' ? '🎉' : '⚠️';
+        const icon       = type === 'auth' ? '🔒' : type === 'success' ? '🎉' : '⚠️';
         const actionsHtml = type !== 'success'
-            ? `<button class="qa-btn-sm" id="qa-banner-resume">▶ Resume</button>
+            ? `<button class="qa-btn-sm"          id="qa-banner-resume">▶ Resume</button>
                <button class="qa-btn-sm qa-danger" id="qa-banner-stop">■ Stop</button>`
             : `<button class="qa-btn-sm qa-secondary" id="qa-banner-dismiss">Dismiss</button>`;
 
@@ -1014,7 +1356,7 @@
 
         if (type !== 'success') {
             q('#qa-banner-resume').onclick = () => { onPauseResume(); hideBanner(); };
-            q('#qa-banner-stop').onclick = () => { onStopRun(); hideBanner(); };
+            q('#qa-banner-stop').onclick   = () => { onStopRun();    hideBanner(); };
         } else {
             q('#qa-banner-dismiss').onclick = hideBanner;
             setTimeout(hideBanner, 6000);
@@ -1031,10 +1373,10 @@
         const { total, success, failed, remaining } = computeStats();
         const pct = total ? Math.round((success / total) * 100) : 0;
 
-        q('#qa-progress-fill').style.width = pct + '%';
-        q('#qa-progress-text').textContent = `${success} / ${total} (${pct}%)`;
-        q('#qa-stat-success').textContent = success;
-        q('#qa-stat-failed').textContent = failed;
+        q('#qa-progress-fill').style.width  = pct + '%';
+        q('#qa-progress-text').textContent  = `${success} / ${total} (${pct}%)`;
+        q('#qa-stat-success').textContent   = success;
+        q('#qa-stat-failed').textContent    = failed;
         q('#qa-stat-remaining').textContent = remaining;
     }
 
@@ -1042,7 +1384,7 @@
         if (!overlayEl) return;
         q('#qa-run-start').disabled = state.isRunning;
         q('#qa-run-pause').disabled = !state.isRunning;
-        q('#qa-run-stop').disabled = !state.isRunning;
+        q('#qa-run-stop').disabled  = !state.isRunning;
         q('#qa-run-pause').textContent = state.isPaused ? '▶ Resume' : '⏸ Pause';
 
         const { total, failed, remaining } = computeStats();
@@ -1054,22 +1396,16 @@
 
     function classifyResponse(res, bodyText) {
         const status = res.status;
-
         if (status === 401 || status === 403)
             return { ok: false, status, message: 'Unauthorized — you appear to be logged out.', isAuthError: true };
-
         if (res.redirected && /login|signin/i.test(res.url))
             return { ok: false, status, message: 'Redirected to login page — session expired.', isAuthError: true };
-
         if (/<input[^>]*type=["']?password["']?/i.test(bodyText) || /<form[^>]*login/i.test(bodyText))
             return { ok: false, status, message: 'Login form detected in response — session expired.', isAuthError: true };
-
         if (!res.ok)
             return { ok: false, status, message: `Server returned an error (HTTP ${status}).`, isAuthError: false };
-
         if ((bodyText || '').trim().startsWith('<'))
             return { ok: false, status, message: 'Unexpected page returned — you may need to log in again.', isAuthError: true };
-
         return { ok: true, status, message: 'Saved successfully.', isAuthError: false };
     }
 
@@ -1096,7 +1432,7 @@
     }
 
     async function runLoop() {
-        state.isRunning = true;
+        state.isRunning     = true;
         state.stopRequested = false;
         updateRunButtons();
         hideBanner();
@@ -1112,7 +1448,7 @@
             while (state.isPaused) { await sleep(200); if (state.stopRequested) break; }
             if (state.stopRequested) break;
 
-            const item = state.working[idx];
+            const item       = state.working[idx];
             const displayNum = idx + 1;
 
             appendLog(`Question ${displayNum} (Post ${item.postID}) — sending title update...`, 'info');
@@ -1133,7 +1469,7 @@
             state.itemStatus[idx] = overallOk ? 'success' : 'failed';
 
             if (overallOk) {
-                state.consecutiveFailures = 0;
+                state.consecutiveFailures     = 0;
                 state.consecutiveAuthFailures = 0;
             } else {
                 state.consecutiveFailures++;
@@ -1160,18 +1496,21 @@
         }
 
         state.isRunning = false;
-        state.isPaused = false;
+        state.isPaused  = false;
         updateRunButtons();
         updateProgressUI();
 
         const stats = computeStats();
         if (!state.stopRequested) {
+            state.hasCompletedRun = true;
+            updateHideTabAvailability();
+
             if (stats.failed === 0 && stats.remaining === 0) {
                 appendLog(`🎉 All done! ${stats.success} succeeded, 0 failed.`, 'done');
-                showBanner('success', `All ${stats.success} question(s) updated successfully!`);
+                showBanner('success', `All ${stats.success} question(s) updated! You can now hide them in the "Hide Questions" tab.`);
             } else if (stats.failed > 0) {
                 appendLog(`Run finished — ${stats.failed} item(s) still need attention.`, 'warn');
-                showBanner('generic', `${stats.failed} item(s) failed and remain editable in the Visualized tab. Fix them, then click Start again to retry just those.`);
+                showBanner('generic', `${stats.failed} item(s) failed. Fix them in the Visualized tab, then click Start to retry.`);
             }
         } else {
             appendLog('⏹ Stopped by user.', 'warn');
@@ -1184,7 +1523,6 @@
 
         const { remaining, failed } = computeStats();
         const toProcess = remaining + failed;
-
         if (toProcess === 0) return showToast('✅ Everything is already up to date — nothing to run.');
 
         state.minDelay = parseFloat(q('#qa-min-delay').value) || 0;
@@ -1205,26 +1543,72 @@
 
     function onStopRun() {
         state.stopRequested = true;
-        state.isPaused = false;
+        state.isPaused      = false;
         updateRunButtons();
     }
 
     /* ============================================================
-       FAB
+       HIDE QUESTIONS — /create-st request
+    ============================================================ */
+    function classifyPageResponse(res, bodyText) {
+        const status = res.status;
+        if (status === 401 || status === 403)
+            return { ok: false, status, message: 'Unauthorized — you appear to be logged out.', isAuthError: true };
+        if (res.redirected && /login|signin/i.test(res.url))
+            return { ok: false, status, message: 'Redirected to login page — session expired.', isAuthError: true };
+        if (/<input[^>]*type=["']?password["']?/i.test(bodyText) || /<form[^>]*login/i.test(bodyText))
+            return { ok: false, status, message: 'Login form detected in response — session expired.', isAuthError: true };
+        if (!res.ok)
+            return { ok: false, status, message: `Server returned an error (HTTP ${status}).`, isAuthError: false };
+        return { ok: true, status, message: 'Request sent successfully.', isAuthError: false };
+    }
+
+    async function sendHideRequest(payload) {
+        const formData = new FormData();
+        formData.append('title',       payload.title   || '');
+        formData.append('tagname',     payload.tagname || '');
+        formData.append('category',    String(payload.category));
+        formData.append('tag',         String(payload.tag));
+        formData.append('userid',      String(payload.userid));
+        formData.append('count',       String(payload.count));
+        formData.append('start',       String(payload.start));
+        formData.append('onlyhideqns', payload.onlyhideqns ? '1' : '0');
+
+        const emptyFile = new File([], '', { type: 'application/octet-stream' });
+        formData.append('file',          emptyFile);
+        formData.append('questionimg[]', emptyFile);
+        formData.append('submit',        '');
+
+        try {
+            const res = await fetch('https://gateoverflow.in/create-st', {
+                method: 'POST',
+                credentials: 'same-origin',
+                body: formData,
+            });
+            let bodyText = '';
+            try { bodyText = await res.text(); } catch (_) {}
+            return classifyPageResponse(res, bodyText);
+        } catch (e) {
+            return { ok: false, status: 'ERR', message: 'Network error — check your internet connection.', isAuthError: false };
+        }
+    }
+
+    /* ============================================================
+       FAB — with version chip
     ============================================================ */
     function addFab() {
         const table = document.getElementById('quickedittable');
-        const fab = document.createElement('button');
+        const fab   = document.createElement('button');
         fab.id = 'qa-extract-fab';
-        fab.textContent = table ? 'Extract Data' : 'No Table Found';
+        fab.innerHTML = (table ? 'Extract Data' : 'No Table Found')
+            + `<span class="qa-version-chip">v${TOOLKIT_VERSION}</span>`;
         fab.disabled = !table;
-        fab.onclick = openModal;
+        fab.onclick  = openModal;
         document.body.appendChild(fab);
     }
 
     /* ============================================================
-       INIT — called immediately (page is already fully loaded by
-       the time this fetched code runs, so no 'load' listener needed)
+       INIT
     ============================================================ */
     function init() {
         injectStyle();

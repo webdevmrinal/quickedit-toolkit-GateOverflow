@@ -1216,7 +1216,7 @@
         const table = document.getElementById('quickedittable');
         const fab = document.createElement('button');
         fab.id = 'qa-extract-fab';
-        fab.textContent = table ? '[test] Extract Data' : 'No Table Found';
+        fab.textContent = table ? 'Extract Data' : 'No Table Found';
         fab.disabled = !table;
         fab.onclick = openModal;
         document.body.appendChild(fab);

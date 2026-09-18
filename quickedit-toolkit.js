@@ -1,11 +1,11 @@
-// @toolkit-version 8.2
+// @toolkit-version 8.3
 // GATE Overflow Quickedit Toolkit — Remote Payload
 // Fetched & executed by the Loader userscript. Not meant to be installed directly in Tampermonkey.
 
 (function () {
     'use strict';
 
-    const TOOLKIT_VERSION = '8.2';
+    const TOOLKIT_VERSION = '8.3';
 
     /* ============================================================
        STATE
@@ -26,13 +26,14 @@
         maxDelay: 15,
 
         // Smart Renumber
-        renumberBaseline: null,          // { prefix, suffix, defaultPad, originalTitles }
+        renumberBaseline: null,          // { mode, prefix/perItemPrefix, suffix, defaultPad, originalTitles }
         renumberDetectionFailReason: null,
         renumberCurrentStart: null,
         renumberCurrentPad: null,
     };
 
     const HIDE_DEFAULTS_KEY = 'qa_hide_defaults_v1';
+    const FAB_POSITION_KEY  = 'qa_fab_position_v1';
 
     /* ============================================================
        STYLES
@@ -50,11 +51,11 @@
         --qa-text: #1d1d1f;
         --qa-text-secondary: #6e6e73;
         --qa-border: #d2d2d7;
-        --qa-radius: 14px;
+        --qa-radius: 12px;
         --qa-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
     }
 
-    body.qa-modal-open > *:not(#qa-modal-overlay) { display: none !important; }
+    body.qa-modal-open > *:not(#qa-modal-overlay):not(#qa-extract-fab) { display: none !important; }
 
     #qa-tag-search {
         display: block; margin-bottom: 6px; padding: 6px 10px; width: 250px;
@@ -67,15 +68,22 @@
     }
 
     #qa-extract-fab {
-        position: fixed; bottom: 28px; right: 28px; z-index: 999998;
+        position: fixed; bottom: 28px; left: 28px; z-index: 999998;
         background: var(--qa-blue); color: #fff; border: none; border-radius: 980px;
         padding: 14px 22px; font-size: 15px; font-weight: 600; font-family: var(--qa-font);
-        box-shadow: 0 4px 14px rgba(0,0,0,0.18); cursor: pointer; transition: all 0.2s ease;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.18); cursor: grab;
+        transition: background 0.2s ease, box-shadow 0.2s ease;
         display: inline-flex; align-items: center; gap: 6px;
+        user-select: none; -webkit-user-select: none; touch-action: none;
     }
     #qa-extract-fab:hover:not(:disabled) {
-        background: var(--qa-blue-hover); transform: translateY(-1px);
+        background: var(--qa-blue-hover);
         box-shadow: 0 6px 18px rgba(0,0,0,0.22);
+    }
+    #qa-extract-fab:active:not(:disabled) { cursor: grabbing; }
+    #qa-extract-fab.qa-fab-dragging {
+        transition: none; cursor: grabbing;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.32);
     }
     #qa-extract-fab:disabled { background: #c7c7cc; cursor: not-allowed; box-shadow: none; }
 
@@ -88,9 +96,9 @@
     }
     .qa-header-version {
         display: inline-flex; align-items: center;
-        font-size: 10.5px; font-weight: 600; color: var(--qa-text-secondary);
+        font-size: 10px; font-weight: 600; color: var(--qa-text-secondary);
         background: var(--qa-bg); border: 1px solid var(--qa-border);
-        border-radius: 999px; padding: 2px 10px; margin-left: 10px;
+        border-radius: 999px; padding: 2px 9px; margin-left: 9px;
         letter-spacing: 0.01em; vertical-align: middle;
     }
 
@@ -104,7 +112,7 @@
     #qa-modal-overlay.qa-visible { opacity: 1; pointer-events: all; }
 
     #qa-modal {
-        background: var(--qa-bg); width: min(1000px, 94vw); height: min(800px, 90vh);
+        background: var(--qa-bg); width: min(860px, 92vw); height: min(660px, 88vh);
         border-radius: var(--qa-radius); box-shadow: 0 20px 60px rgba(0,0,0,0.3);
         display: flex; flex-direction: column; overflow: hidden;
         transform: scale(0.94) translateY(10px);
@@ -114,57 +122,57 @@
 
     #qa-modal-header {
         display: flex; align-items: center; justify-content: space-between;
-        padding: 16px 22px; border-bottom: 1px solid var(--qa-border);
+        padding: 12px 18px; border-bottom: 1px solid var(--qa-border);
         background: var(--qa-bg-secondary); flex-shrink: 0;
     }
     #qa-modal-header h2 {
-        margin: 0; font-size: 17px; font-weight: 600; color: var(--qa-text);
+        margin: 0; font-size: 15px; font-weight: 600; color: var(--qa-text);
         display: flex; align-items: center;
     }
     #qa-modal-close {
-        width: 30px; height: 30px; border-radius: 50%; border: none;
-        background: #e8e8ed; color: var(--qa-text-secondary); font-size: 16px;
+        width: 26px; height: 26px; border-radius: 50%; border: none;
+        background: #e8e8ed; color: var(--qa-text-secondary); font-size: 14px;
         cursor: pointer; display: flex; align-items: center; justify-content: center;
         transition: background 0.15s ease;
     }
     #qa-modal-close:hover { background: #d8d8dd; }
 
     #qa-tabs {
-        display: flex; gap: 6px; padding: 10px 22px 0;
+        display: flex; gap: 4px; padding: 8px 18px 0;
         background: var(--qa-bg-secondary); flex-shrink: 0; flex-wrap: wrap;
     }
     .qa-tab-btn {
-        border: none; background: transparent; padding: 8px 16px; font-size: 14px; font-weight: 500;
-        color: var(--qa-text-secondary); cursor: pointer; border-radius: 8px 8px 0 0; transition: color 0.15s ease;
+        border: none; background: transparent; padding: 6px 14px; font-size: 13px; font-weight: 500;
+        color: var(--qa-text-secondary); cursor: pointer; border-radius: 7px 7px 0 0; transition: color 0.15s ease;
     }
     .qa-tab-btn.qa-active { color: var(--qa-blue); background: var(--qa-bg); }
     .qa-tab-btn.qa-tab-locked { opacity: 0.55; }
 
     #qa-toolbar {
-        display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
-        padding: 12px 22px; background: var(--qa-bg-secondary);
+        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+        padding: 10px 18px; background: var(--qa-bg-secondary);
         border-bottom: 1px solid var(--qa-border); flex-shrink: 0;
     }
     #qa-toolbar.qa-hidden { display: none; }
     .qa-toolbar-group {
-        display: flex; align-items: flex-end; gap: 6px; flex-wrap: wrap;
+        display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
         background: var(--qa-bg); border: 1px solid var(--qa-border);
-        border-radius: 10px; padding: 8px 10px;
+        border-radius: 9px; padding: 6px 9px;
     }
-    .qa-field-stack { display: flex; flex-direction: column; gap: 3px; }
+    .qa-field-stack { display: flex; flex-direction: column; gap: 2px; }
     .qa-field-stack label {
-        font-size: 10.5px; color: var(--qa-text-secondary); font-weight: 600;
+        font-size: 9.5px; color: var(--qa-text-secondary); font-weight: 600;
         text-transform: uppercase; letter-spacing: 0.02em;
     }
     .qa-toolbar input[type="text"], .qa-toolbar input[type="number"], .qa-toolbar select {
-        border: 1px solid var(--qa-border); border-radius: 6px; padding: 5px 8px;
-        font-size: 13px; font-family: var(--qa-font);
+        border: 1px solid var(--qa-border); border-radius: 6px; padding: 4px 7px;
+        font-size: 12px; font-family: var(--qa-font);
     }
-    .qa-toolbar input[type="number"] { width: 60px; }
-    .qa-toolbar input[type="text"] { width: 140px; }
+    .qa-toolbar input[type="number"] { width: 48px; }
+    .qa-toolbar input[type="text"] { width: 120px; }
     .qa-btn-sm {
-        border: none; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600;
-        cursor: pointer; color: #fff; background: var(--qa-blue); transition: background 0.15s ease; height: 30px;
+        border: none; border-radius: 7px; padding: 5px 11px; font-size: 12.5px; font-weight: 600;
+        cursor: pointer; color: #fff; background: var(--qa-blue); transition: background 0.15s ease; height: 27px;
     }
     .qa-btn-sm:hover { background: var(--qa-blue-hover); }
     .qa-btn-sm.qa-secondary { background: #8e8e93; }
@@ -174,12 +182,12 @@
     .qa-btn-sm:disabled { background: #c7c7cc !important; cursor: not-allowed; }
     .qa-checkbox-wrap {
         display: flex; align-items: center; gap: 4px;
-        font-size: 12px; color: var(--qa-text-secondary); height: 30px;
+        font-size: 11px; color: var(--qa-text-secondary); height: 27px;
     }
-    #qa-toolbar-right { margin-left: auto; display: flex; gap: 8px; align-self: flex-end; }
+    #qa-toolbar-right { margin-left: auto; display: flex; gap: 6px; align-self: center; }
 
     #qa-modal-body {
-        flex: 1; overflow: auto; padding: 20px 22px;
+        flex: 1; overflow: auto; padding: 16px 18px;
         background: var(--qa-bg); position: relative;
     }
     .qa-tab-panel { display: none; height: 100%; }
@@ -188,54 +196,54 @@
     /* ---- Smart Renumber panel ---- */
     .qa-renumber-panel {
         border: 1px solid var(--qa-border); background: var(--qa-bg-secondary);
-        border-radius: 12px; padding: 16px; margin-bottom: 14px; flex-shrink: 0;
+        border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; flex-shrink: 0;
     }
     .qa-renumber-panel.qa-hidden { display: none; }
     .qa-renumber-header {
         display: flex; justify-content: space-between; align-items: center;
-        margin-bottom: 12px; font-size: 14px; color: var(--qa-text);
+        margin-bottom: 10px; font-size: 13px; color: var(--qa-text);
     }
-    .qa-renumber-header-actions { display: flex; gap: 8px; }
+    .qa-renumber-header-actions { display: flex; gap: 6px; }
     .qa-renumber-fail {
-        font-size: 13px; color: #86201b; background: #fdecea; border: 1px solid #f5c2c0;
-        padding: 12px 14px; border-radius: 10px; line-height: 1.55;
+        font-size: 12.5px; color: #86201b; background: #fdecea; border: 1px solid #f5c2c0;
+        padding: 10px 12px; border-radius: 9px; line-height: 1.5;
     }
     .qa-renumber-fail-reason { display: block; margin-top: 4px; font-style: italic; opacity: 0.85; }
     .qa-renumber-pattern {
-        font-size: 13px; margin-bottom: 14px; display: flex; align-items: center;
+        font-size: 12.5px; margin-bottom: 12px; display: flex; align-items: center;
         gap: 6px; flex-wrap: wrap; color: var(--qa-text-secondary);
     }
     .qa-renumber-pattern code {
-        background: #ececee; padding: 2px 7px; border-radius: 5px;
-        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--qa-text);
+        background: #ececee; padding: 2px 6px; border-radius: 5px;
+        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--qa-text);
     }
     .qa-renumber-num-slot { font-weight: 700; color: var(--qa-blue); padding: 0 2px; }
-    .qa-renumber-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 14px; }
+    .qa-renumber-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 12px; }
     .qa-renumber-controls input {
-        border: 1px solid var(--qa-border); border-radius: 8px; padding: 6px 10px;
-        font-size: 13px; width: 90px; font-family: var(--qa-font);
+        border: 1px solid var(--qa-border); border-radius: 7px; padding: 5px 9px;
+        font-size: 12.5px; width: 80px; font-family: var(--qa-font);
     }
     .qa-renumber-collision-warning {
         background: #fdecea; border: 1px solid #f5c2c0; color: #86201b;
-        border-radius: 10px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 14px; line-height: 1.6;
+        border-radius: 9px; padding: 9px 12px; font-size: 12px; margin-bottom: 12px; line-height: 1.55;
     }
     .qa-renumber-collision-item { margin-top: 3px; }
-    .qa-renumber-preview { margin-bottom: 14px; }
+    .qa-renumber-preview { margin-bottom: 12px; }
     .qa-renumber-preview-title {
-        font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em;
-        color: var(--qa-text-secondary); font-weight: 700; margin-bottom: 6px;
+        font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.02em;
+        color: var(--qa-text-secondary); font-weight: 700; margin-bottom: 5px;
     }
     #qa-renumber-preview-list {
-        max-height: 200px; overflow-y: auto; border: 1px solid var(--qa-border);
-        border-radius: 10px; background: var(--qa-bg);
+        max-height: 170px; overflow-y: auto; border: 1px solid var(--qa-border);
+        border-radius: 9px; background: var(--qa-bg);
     }
     .qa-renumber-row {
-        display: flex; align-items: center; gap: 10px; padding: 6px 12px;
-        font-size: 12.5px; border-bottom: 1px solid var(--qa-border);
+        display: flex; align-items: center; gap: 10px; padding: 5px 10px;
+        font-size: 12px; border-bottom: 1px solid var(--qa-border);
     }
     .qa-renumber-row:last-child { border-bottom: none; }
-    .qa-renumber-row-idx { color: var(--qa-text-secondary); font-weight: 600; min-width: 32px; }
-    .qa-renumber-row-post { color: var(--qa-text-secondary); min-width: 90px; }
+    .qa-renumber-row-idx { color: var(--qa-text-secondary); font-weight: 600; min-width: 30px; }
+    .qa-renumber-row-post { color: var(--qa-text-secondary); min-width: 80px; }
     .qa-renumber-row-nums { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; }
     .qa-renumber-row-old { color: var(--qa-red); text-decoration: line-through; }
     .qa-renumber-row-arrow { color: var(--qa-text-secondary); margin: 0 4px; }
@@ -243,9 +251,9 @@
     .qa-renumber-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
     /* Cards */
-    .qa-card-list { display: flex; flex-direction: column; gap: 10px; }
+    .qa-card-list { display: flex; flex-direction: column; gap: 8px; }
     .qa-card {
-        border: 1px solid var(--qa-border); border-radius: 12px; padding: 14px 16px;
+        border: 1px solid var(--qa-border); border-radius: 10px; padding: 11px 14px;
         transition: box-shadow 0.15s ease, background 0.3s ease;
         background: var(--qa-bg-secondary); position: relative;
     }
@@ -258,27 +266,27 @@
     }
     .qa-card.qa-card-locked .qa-edit-input:hover { background: #e9e9ec; border-color: transparent; }
 
-    .qa-card-meta { position: absolute; top: 10px; right: 14px; display: flex; align-items: center; gap: 6px; }
-    .qa-card-index { font-size: 11px; color: var(--qa-text-secondary); font-weight: 600; }
+    .qa-card-meta { position: absolute; top: 9px; right: 12px; display: flex; align-items: center; gap: 6px; }
+    .qa-card-index { font-size: 10.5px; color: var(--qa-text-secondary); font-weight: 600; }
     .qa-status-badge {
-        font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+        font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
         text-transform: uppercase; letter-spacing: 0.02em;
     }
     .qa-status-badge.qa-status-failed { background: #ffdcda; color: #c22b22; }
     .qa-status-badge.qa-status-locked { background: #e4e4e8; color: #6e6e73; }
 
     .qa-card-row {
-        display: flex; gap: 10px; margin-bottom: 8px;
-        font-size: 13.5px; align-items: flex-start;
+        display: flex; gap: 8px; margin-bottom: 6px;
+        font-size: 13px; align-items: flex-start;
     }
     .qa-card-row:last-child { margin-bottom: 0; }
-    .qa-card-label { color: var(--qa-text-secondary); min-width: 70px; font-weight: 500; padding-top: 6px; }
+    .qa-card-label { color: var(--qa-text-secondary); min-width: 58px; font-weight: 500; padding-top: 5px; }
     .qa-card-value { color: var(--qa-text); word-break: break-word; flex: 1; }
-    .qa-card-static { padding-top: 6px; }
+    .qa-card-static { padding-top: 5px; }
 
     .qa-edit-input {
         width: 100%; box-sizing: border-box; border: 1px solid transparent;
-        border-radius: 8px; padding: 6px 8px; font-size: 13.5px; font-family: var(--qa-font);
+        border-radius: 7px; padding: 5px 7px; font-size: 13px; font-family: var(--qa-font);
         background: transparent; color: var(--qa-text); transition: all 0.15s ease;
     }
     .qa-edit-input:hover { background: var(--qa-bg); border-color: var(--qa-border); }
@@ -289,49 +297,49 @@
 
     .qa-tag-chip {
         display: inline-block; background: #e8f0fe; color: var(--qa-blue);
-        border-radius: 5px; padding: 1px 7px; font-size: 11px;
+        border-radius: 5px; padding: 1px 6px; font-size: 10.5px;
         margin: 2px 3px 0 0; font-weight: 500;
     }
     .qa-chip-preview { margin-top: 4px; }
 
     #qa-modal-footer {
         display: flex; justify-content: space-between; align-items: center;
-        padding: 14px 22px; border-top: 1px solid var(--qa-border);
+        padding: 10px 18px; border-top: 1px solid var(--qa-border);
         background: var(--qa-bg-secondary); flex-shrink: 0;
     }
-    #qa-record-count { font-size: 13px; color: var(--qa-text-secondary); }
+    #qa-record-count { font-size: 12.5px; color: var(--qa-text-secondary); }
     #qa-copy-btn {
         background: var(--qa-blue); color: #fff; border: none; border-radius: 980px;
-        padding: 9px 20px; font-size: 14px; font-weight: 600;
+        padding: 8px 18px; font-size: 13px; font-weight: 600;
         cursor: pointer; transition: background 0.15s ease;
     }
     #qa-copy-btn:hover { background: var(--qa-blue-hover); }
     #qa-copy-btn.qa-copied { background: var(--qa-green); }
 
     #qa-toast {
-        position: absolute; top: 14px; left: 50%; transform: translate(-50%, -20px);
-        background: #1d1d1f; color: #fff; padding: 10px 18px; border-radius: 980px;
-        font-size: 13px; font-weight: 500; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        position: absolute; top: 12px; left: 50%; transform: translate(-50%, -20px);
+        background: #1d1d1f; color: #fff; padding: 9px 16px; border-radius: 980px;
+        font-size: 12.5px; font-weight: 500; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
         opacity: 0; pointer-events: none; transition: all 0.25s ease; z-index: 10;
         max-width: 80%; text-align: center;
     }
     #qa-toast.qa-show { opacity: 1; transform: translate(-50%, 0); }
 
-    #qa-run-panel { display: flex; flex-direction: column; height: 100%; gap: 14px; min-height: 0; }
+    #qa-run-panel { display: flex; flex-direction: column; height: 100%; gap: 12px; min-height: 0; }
     .qa-run-config {
-        display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+        display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
         background: var(--qa-bg-secondary); border: 1px solid var(--qa-border);
-        border-radius: 12px; padding: 14px 16px; flex-shrink: 0;
+        border-radius: 10px; padding: 12px 14px; flex-shrink: 0;
     }
     .qa-run-field { display: flex; flex-direction: column; gap: 4px; }
-    .qa-run-field label { font-size: 12px; color: var(--qa-text-secondary); font-weight: 500; }
+    .qa-run-field label { font-size: 11.5px; color: var(--qa-text-secondary); font-weight: 500; }
     .qa-run-field input {
-        border: 1px solid var(--qa-border); border-radius: 8px; padding: 7px 10px;
-        font-size: 13px; width: 90px; font-family: var(--qa-font);
+        border: 1px solid var(--qa-border); border-radius: 7px; padding: 6px 9px;
+        font-size: 12.5px; width: 80px; font-family: var(--qa-font);
     }
     .qa-run-buttons { display: flex; gap: 8px; margin-left: auto; }
     .qa-btn {
-        border: none; border-radius: 980px; padding: 9px 20px; font-size: 14px;
+        border: none; border-radius: 980px; padding: 8px 18px; font-size: 13px;
         font-weight: 600; cursor: pointer; color: #fff; transition: all 0.15s ease;
     }
     .qa-btn:disabled { background: #c7c7cc !important; cursor: not-allowed; }
@@ -342,9 +350,9 @@
     .qa-btn-stop { background: var(--qa-red); }
     .qa-btn-stop:hover:not(:disabled) { background: #e0342b; }
 
-    .qa-progress-wrap { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+    .qa-progress-wrap { display: flex; flex-direction: column; gap: 7px; flex-shrink: 0; }
     .qa-progress-track {
-        width: 100%; height: 6px; background: #e8e8ed;
+        width: 100%; height: 5px; background: #e8e8ed;
         border-radius: 999px; overflow: hidden;
     }
     .qa-progress-fill {
@@ -359,25 +367,25 @@
     }
     .qa-progress-meta {
         display: flex; justify-content: space-between;
-        font-size: 13px; color: var(--qa-text-secondary);
+        font-size: 12.5px; color: var(--qa-text-secondary);
     }
 
-    .qa-stat-row { display: flex; gap: 10px; flex-shrink: 0; }
+    .qa-stat-row { display: flex; gap: 8px; flex-shrink: 0; }
     .qa-stat-chip {
-        flex: 1; text-align: center; border-radius: 10px; padding: 10px;
+        flex: 1; text-align: center; border-radius: 9px; padding: 9px;
         background: var(--qa-bg-secondary); border: 1px solid var(--qa-border);
     }
-    .qa-stat-chip .qa-stat-num { font-size: 20px; font-weight: 700; color: var(--qa-text); display: block; }
-    .qa-stat-chip .qa-stat-label { font-size: 11.5px; color: var(--qa-text-secondary); }
+    .qa-stat-chip .qa-stat-num { font-size: 18px; font-weight: 700; color: var(--qa-text); display: block; }
+    .qa-stat-chip .qa-stat-label { font-size: 10.5px; color: var(--qa-text-secondary); }
     .qa-stat-chip.qa-success .qa-stat-num { color: var(--qa-green); }
     .qa-stat-chip.qa-failed  .qa-stat-num { color: var(--qa-red); }
 
     .qa-run-banner {
-        display: flex; align-items: center; gap: 12px; padding: 12px 16px;
-        border-radius: 12px; font-size: 13.5px; flex-shrink: 0;
+        display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+        border-radius: 10px; font-size: 12.5px; flex-shrink: 0;
     }
     .qa-run-banner.qa-hidden { display: none; }
-    .qa-banner-icon { font-size: 18px; flex-shrink: 0; }
+    .qa-banner-icon { font-size: 16px; flex-shrink: 0; }
     .qa-banner-text { flex: 1; line-height: 1.4; }
     .qa-banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
     .qa-banner-auth, .qa-banner-generic {
@@ -393,34 +401,34 @@
 
     #qa-simple-feed { padding-right: 2px; }
     .qa-feed-card {
-        border: 1px solid var(--qa-border); border-radius: 10px; padding: 8px 12px;
+        border: 1px solid var(--qa-border); border-radius: 9px; padding: 7px 11px;
         margin-bottom: 6px; background: var(--qa-bg-secondary);
     }
     .qa-feed-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
-    .qa-feed-num    { font-size: 11px; font-weight: 700; color: var(--qa-text-secondary); }
-    .qa-feed-postid { font-size: 11px; color: var(--qa-text-secondary); }
+    .qa-feed-num    { font-size: 10.5px; font-weight: 700; color: var(--qa-text-secondary); }
+    .qa-feed-postid { font-size: 10.5px; color: var(--qa-text-secondary); }
     .qa-feed-overall {
-        margin-left: auto; font-size: 10.5px; font-weight: 700;
-        padding: 2px 8px; border-radius: 999px;
+        margin-left: auto; font-size: 10px; font-weight: 700;
+        padding: 2px 7px; border-radius: 999px;
     }
     .qa-feed-overall.qa-ok   { background: #d3f5df; color: #0a7d33; }
     .qa-feed-overall.qa-fail { background: #ffe3b3; color: #8a5a00; }
     .qa-feed-body  { display: flex; flex-direction: column; gap: 5px; }
     .qa-feed-item  { display: flex; gap: 8px; align-items: flex-start; }
-    .qa-feed-icon  { font-size: 12.5px; line-height: 1.4; flex-shrink: 0; }
+    .qa-feed-icon  { font-size: 12px; line-height: 1.4; flex-shrink: 0; }
     .qa-feed-text  { flex: 1; min-width: 0; }
     .qa-feed-title-text {
-        font-size: 12.5px; color: var(--qa-text); font-weight: 500;
+        font-size: 12px; color: var(--qa-text); font-weight: 500;
         word-break: break-word; line-height: 1.35;
     }
     .qa-feed-tags  { margin-bottom: 1px; line-height: 1.2; }
-    .qa-feed-sub   { font-size: 11px; color: var(--qa-text-secondary); margin-top: 1px; }
+    .qa-feed-sub   { font-size: 10.5px; color: var(--qa-text-secondary); margin-top: 1px; }
     .qa-feed-sub-error { color: var(--qa-red); font-weight: 600; }
 
     #qa-log-console {
-        background: #1d1d1f; color: #d1d1d6; border-radius: 12px;
-        padding: 12px 14px; font-family: "SF Mono", Menlo, Consolas, monospace;
-        font-size: 12.5px; line-height: 1.7; height: 100%; box-sizing: border-box;
+        background: #1d1d1f; color: #d1d1d6; border-radius: 10px;
+        padding: 10px 12px; font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12px; line-height: 1.65; height: 100%; box-sizing: border-box;
     }
     .qa-log-line    { white-space: pre-wrap; word-break: break-word; }
     .qa-log-info    { color: #8e8e93; }
@@ -432,25 +440,25 @@
     /* ---- Hide Questions tab ---- */
     .qa-hide-locked {
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        text-align: center; gap: 10px; padding: 70px 20px;
+        text-align: center; gap: 9px; padding: 60px 20px;
         color: var(--qa-text-secondary); flex: 1;
     }
     .qa-hide-locked.qa-hidden { display: none; }
-    .qa-hide-locked-icon { font-size: 34px; }
-    .qa-hide-locked-text { max-width: 440px; font-size: 13.5px; line-height: 1.55; }
+    .qa-hide-locked-icon { font-size: 30px; }
+    .qa-hide-locked-text { max-width: 420px; font-size: 13px; line-height: 1.5; }
 
     #qa-hide-form-wrap.qa-hidden { display: none; }
-    .qa-hide-intro h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; color: var(--qa-text); }
-    .qa-hide-intro p  { margin: 0 0 16px; font-size: 12.5px; color: var(--qa-text-secondary); line-height: 1.55; }
+    .qa-hide-intro h3 { margin: 0 0 4px; font-size: 15px; font-weight: 700; color: var(--qa-text); }
+    .qa-hide-intro p  { margin: 0 0 14px; font-size: 12px; color: var(--qa-text-secondary); line-height: 1.5; }
     .qa-hide-intro code {
-        background: #ececee; padding: 1px 6px; border-radius: 5px;
-        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px;
+        background: #ececee; padding: 1px 5px; border-radius: 5px;
+        font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px;
     }
 
     .qa-hide-grid {
-        display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 18px;
+        display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 16px;
         background: var(--qa-bg-secondary); border: 1px solid var(--qa-border);
-        border-radius: 12px; padding: 16px;
+        border-radius: 10px; padding: 14px;
     }
     .qa-hide-grid .qa-field-stack { gap: 5px; }
     .qa-hide-grid .qa-field-stack label {
@@ -458,16 +466,16 @@
         font-weight: 600; color: var(--qa-text);
     }
     .qa-hide-grid input, .qa-hide-grid select {
-        border: 1px solid var(--qa-border); border-radius: 8px; padding: 7px 10px;
-        font-size: 13px; font-family: var(--qa-font); min-width: 140px; box-sizing: border-box;
+        border: 1px solid var(--qa-border); border-radius: 7px; padding: 6px 9px;
+        font-size: 12.5px; font-family: var(--qa-font); min-width: 130px; box-sizing: border-box;
     }
-    .qa-hide-grid select { min-width: 240px; }
+    .qa-hide-grid select { min-width: 220px; }
     .qa-hide-checkbox-row {
-        display: flex; align-items: center; gap: 6px; font-size: 13px;
-        color: var(--qa-text); align-self: flex-end; height: 34px;
+        display: flex; align-items: center; gap: 6px; font-size: 12.5px;
+        color: var(--qa-text); align-self: flex-end; height: 32px;
     }
 
-    .qa-hide-actions { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+    .qa-hide-actions { display: flex; justify-content: flex-end; margin-bottom: 14px; }
     #qa-hide-result { margin-top: 4px; }
     #qa-hide-result.qa-hidden { display: none; }
     `;
@@ -489,6 +497,9 @@
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
+    }
+    function escapeRegExp(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
     function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
@@ -548,16 +559,53 @@
         return suffix;
     }
 
+    /* Flexible-prefix detector: matches "...: <digits><optional trailing punctuation>"
+       at the very end of the title. The text before the colon+number may differ
+       freely between titles — only the trailing suffix (after the number) must match. */
+    function detectColonNumberingPattern(titles) {
+        const re = /^(.*:\s*)(\d+)(\D*)$/;
+        const matches = titles.map(t => t.match(re));
+
+        if (!matches.every(Boolean)) {
+            return { success: false, reason: 'Not all titles end with a ": <number>" pattern.' };
+        }
+
+        const suffixes = matches.map(m => m[3]);
+        const commonSuffix = suffixes.every(s => s === suffixes[0]) ? suffixes[0] : null;
+        if (commonSuffix === null) {
+            return { success: false, reason: 'The text after the number is inconsistent between titles.' };
+        }
+
+        const numStrs = matches.map(m => m[2]);
+        const padWidth = Math.max(...numStrs.map(n => n.length));
+        const hasLeadingZero = numStrs.some(n => n.length > 1 && n[0] === '0');
+        const perItemPrefix = matches.map(m => m[1]);
+
+        return {
+            success: true,
+            mode: 'colon',
+            perItemPrefix,
+            suffix: commonSuffix,
+            padWidth,
+            hasLeadingZero,
+        };
+    }
+
     /* Detects a "<static prefix><NUMBER><static suffix>" pattern across a list of titles.
-       Returns { success:true, prefix, suffix, padWidth, hasLeadingZero } or { success:false, reason }. */
+       Tries the flexible colon-based pattern first (recommended for "...: N" style titles),
+       then falls back to the original identical-prefix/suffix detection. */
     function detectNumberingPattern(titles) {
         if (!titles.length) return { success: false, reason: 'No titles to analyze.' };
 
+        const colonResult = detectColonNumberingPattern(titles);
+        if (colonResult.success) return colonResult;
+
         if (titles.length === 1) {
             const m = titles[0].match(/^(.*?)(\d+)(\D*)$/);
-            if (!m) return { success: false, reason: 'No number found in the title.' };
+            if (!m) return { success: false, reason: colonResult.reason || 'No number found in the title.' };
             return {
                 success: true,
+                mode: 'common',
                 prefix: m[1],
                 suffix: m[3],
                 padWidth: m[2].length,
@@ -580,13 +628,13 @@
             return { success: false, reason: 'No varying number segment detected — titles appear identical.' };
         }
         if (!middles.every(m => /^\d+$/.test(m))) {
-            return { success: false, reason: "Titles don't share a consistent numbering pattern — something other than the number differs between them." };
+            return { success: false, reason: colonResult.reason || "Titles don't share a consistent numbering pattern — something other than the number differs between them." };
         }
 
         const padWidth = Math.max(...middles.map(m => m.length));
         const hasLeadingZero = middles.some(m => m.length > 1 && m[0] === '0');
 
-        return { success: true, prefix, suffix, padWidth, hasLeadingZero };
+        return { success: true, mode: 'common', prefix, suffix, padWidth, hasLeadingZero };
     }
 
     function formatNumber(num, padWidth) {
@@ -614,12 +662,21 @@
         const detection = detectNumberingPattern(titles);
 
         if (detection.success) {
-            state.renumberBaseline = {
-                prefix: detection.prefix,
-                suffix: detection.suffix,
-                defaultPad: detection.hasLeadingZero ? detection.padWidth : 0,
-                originalTitles: titles.slice(),
-            };
+            state.renumberBaseline = detection.mode === 'colon'
+                ? {
+                    mode: 'colon',
+                    perItemPrefix: detection.perItemPrefix,
+                    suffix: detection.suffix,
+                    defaultPad: detection.hasLeadingZero ? detection.padWidth : 0,
+                    originalTitles: titles.slice(),
+                }
+                : {
+                    mode: 'common',
+                    prefix: detection.prefix,
+                    suffix: detection.suffix,
+                    defaultPad: detection.hasLeadingZero ? detection.padWidth : 0,
+                    originalTitles: titles.slice(),
+                };
             state.renumberDetectionFailReason = null;
         } else {
             state.renumberBaseline = null;
@@ -630,34 +687,42 @@
 
     /* Scans items OUTSIDE the current working slice for the same pattern,
        returns (highest existing number found) + 1, or 1 if none found. */
-    function suggestSmartStart(prefix, suffix) {
+    function suggestSmartStart(baseline) {
         const workingIds = new Set(state.working.map(i => i.postID));
         const others = state.original.filter(i => !workingIds.has(i.postID));
         let maxNum = 0, found = false;
 
-        others.forEach(item => {
-            const t = item.questionTitle || '';
-            if (t.length >= prefix.length + suffix.length && t.startsWith(prefix) && t.endsWith(suffix)) {
-                const mid = extractMiddle(t, prefix, suffix);
-                if (/^\d+$/.test(mid)) {
-                    found = true;
-                    maxNum = Math.max(maxNum, parseInt(mid, 10));
+        if (baseline.mode === 'colon') {
+            const re = new RegExp(':\\s*(\\d+)' + escapeRegExp(baseline.suffix) + '$');
+            others.forEach(item => {
+                const m = (item.questionTitle || '').match(re);
+                if (m) { found = true; maxNum = Math.max(maxNum, parseInt(m[1], 10)); }
+            });
+        } else {
+            const { prefix, suffix } = baseline;
+            others.forEach(item => {
+                const t = item.questionTitle || '';
+                if (t.length >= prefix.length + suffix.length && t.startsWith(prefix) && t.endsWith(suffix)) {
+                    const mid = extractMiddle(t, prefix, suffix);
+                    if (/^\d+$/.test(mid)) { found = true; maxNum = Math.max(maxNum, parseInt(mid, 10)); }
                 }
-            }
-        });
+            });
+        }
 
         return found ? maxNum + 1 : 1;
     }
 
-    /* Checks whether applying (prefix + number + suffix) for the current slice
-       would recreate a title that already exists elsewhere in the original data. */
-    function checkRenumberCollisions(prefix, suffix, padWidth, start) {
+    /* Checks whether applying the numbering for the current slice would recreate
+       a title that already exists elsewhere in the original data. */
+    function checkRenumberCollisions(baseline, padWidth, start) {
         const workingIds = new Set(state.working.map(i => i.postID));
         const others = state.original.filter(i => !workingIds.has(i.postID));
         const conflicts = [];
 
         state.working.forEach((item, idx) => {
-            const newTitle = prefix + formatNumber(start + idx, padWidth) + suffix;
+            const newTitle = baseline.mode === 'colon'
+                ? baseline.perItemPrefix[idx] + formatNumber(start + idx, padWidth) + baseline.suffix
+                : baseline.prefix + formatNumber(start + idx, padWidth) + baseline.suffix;
             const collidesWith = others.find(o => o.questionTitle === newTitle);
             if (collidesWith) conflicts.push({ idx, newTitle, collidesWith });
         });
@@ -667,11 +732,13 @@
 
     function applyRenumbering(startVal, padWidth) {
         if (!state.renumberBaseline) return;
-        const { prefix, suffix } = state.renumberBaseline;
+        const baseline = state.renumberBaseline;
 
         pushHistory();
         state.working.forEach((item, idx) => {
-            item.questionTitle = prefix + formatNumber(startVal + idx, padWidth) + suffix;
+            item.questionTitle = baseline.mode === 'colon'
+                ? baseline.perItemPrefix[idx] + formatNumber(startVal + idx, padWidth) + baseline.suffix
+                : baseline.prefix + formatNumber(startVal + idx, padWidth) + baseline.suffix;
             if (state.itemStatus[idx] === 'success') delete state.itemStatus[idx];
         });
     }
@@ -1129,34 +1196,45 @@
                 <div class="qa-renumber-fail">
                     ⚠️ Couldn't detect a consistent numbering pattern in the current titles.
                     <span class="qa-renumber-fail-reason">${escapeHtml(reason)}</span>
-                    Tip: Smart Renumber works best when every title follows the same
-                    "...Question: N" style pattern, differing only in the number. You can still
-                    renumber manually using Find &amp; Replace with the {{n}} auto-number token.
+                    Tip: Smart Renumber looks for a trailing "<code>: N</code>" style number at the
+                    end of each title — the text before the colon may differ freely between questions.
+                    You can still renumber manually using Find &amp; Replace with the {{n}} auto-number token.
                 </div>`;
             return;
         }
 
-        const { prefix, suffix, defaultPad, originalTitles } = state.renumberBaseline;
-        const suggestedStart = suggestSmartStart(prefix, suffix);
+        const baseline = state.renumberBaseline;
+        const { suffix, defaultPad, originalTitles, mode } = baseline;
+        const suggestedStart = suggestSmartStart(baseline);
         const currentStart = state.renumberCurrentStart != null ? state.renumberCurrentStart : suggestedStart;
         const currentPad   = state.renumberCurrentPad   != null ? state.renumberCurrentPad   : defaultPad;
 
-        const rows = state.working.map((item, idx) => ({
-            idx,
-            postID: item.postID,
-            oldNum: extractMiddle(originalTitles[idx], prefix, suffix),
-            newNum: formatNumber(currentStart + idx, currentPad),
-        }));
+        const rows = state.working.map((item, idx) => {
+            const itemPrefix = mode === 'colon' ? baseline.perItemPrefix[idx] : baseline.prefix;
+            return {
+                idx,
+                postID: item.postID,
+                oldNum: extractMiddle(originalTitles[idx], itemPrefix, suffix),
+                newNum: formatNumber(currentStart + idx, currentPad),
+            };
+        });
 
-        const conflicts = checkRenumberCollisions(prefix, suffix, currentPad, currentStart);
+        const conflicts = checkRenumberCollisions(baseline, currentPad, currentStart);
         const canRevert = state.working.some((item, idx) => item.questionTitle !== originalTitles[idx]);
+
+        const patternHtml = mode === 'colon'
+            ? `<code>(text varies)</code> :
+               <span class="qa-renumber-num-slot">[N]</span>
+               <code>${escapeHtml(truncateMiddle(suffix, 20)) || '(none)'}</code>
+               <span style="font-size:11px;opacity:0.7;">only the trailing number is renumbered</span>`
+            : `<code title="${escapeHtml(baseline.prefix)}">${escapeHtml(truncateMiddle(baseline.prefix, 42))}</code>
+               <span class="qa-renumber-num-slot">[N]</span>
+               <code title="${escapeHtml(suffix)}">${escapeHtml(truncateMiddle(suffix, 20)) || '(none)'}</code>`;
 
         body.innerHTML = `
             <div class="qa-renumber-pattern">
                 <span>Detected pattern:</span>
-                <code title="${escapeHtml(prefix)}">${escapeHtml(truncateMiddle(prefix, 42))}</code>
-                <span class="qa-renumber-num-slot">[N]</span>
-                <code title="${escapeHtml(suffix)}">${escapeHtml(truncateMiddle(suffix, 20)) || '(none)'}</code>
+                ${patternHtml}
             </div>
 
             <div class="qa-renumber-controls">
@@ -1569,8 +1647,7 @@
 
         renumberPanel.addEventListener('click', (e) => {
             if (e.target.id === 'qa-renumber-smart-start') {
-                const { prefix, suffix } = state.renumberBaseline;
-                state.renumberCurrentStart = suggestSmartStart(prefix, suffix);
+                state.renumberCurrentStart = suggestSmartStart(state.renumberBaseline);
                 renderRenumberPanel();
             }
 
@@ -1582,10 +1659,10 @@
             }
 
             if (e.target.id === 'qa-renumber-apply') {
-                const { prefix, suffix, defaultPad } = state.renumberBaseline;
-                const start = state.renumberCurrentStart != null ? state.renumberCurrentStart : suggestSmartStart(prefix, suffix);
-                const pad   = state.renumberCurrentPad   != null ? state.renumberCurrentPad   : defaultPad;
-                const conflicts = checkRenumberCollisions(prefix, suffix, pad, start);
+                const baseline = state.renumberBaseline;
+                const start = state.renumberCurrentStart != null ? state.renumberCurrentStart : suggestSmartStart(baseline);
+                const pad   = state.renumberCurrentPad   != null ? state.renumberCurrentPad   : baseline.defaultPad;
+                const conflicts = checkRenumberCollisions(baseline, pad, start);
 
                 if (conflicts.length) {
                     if (!confirm(`⚠️ ${conflicts.length} conflict(s) detected — this numbering would duplicate titles that already exist elsewhere in your extracted data. Apply anyway?`)) return;
@@ -2025,8 +2102,96 @@
     }
 
     /* ============================================================
-       FAB
+       FAB (draggable, position persisted)
     ============================================================ */
+    function loadFabPosition() {
+        try { return JSON.parse(localStorage.getItem(FAB_POSITION_KEY)) || null; }
+        catch (e) { return null; }
+    }
+
+    function saveFabPosition(pos) {
+        try { localStorage.setItem(FAB_POSITION_KEY, JSON.stringify(pos)); }
+        catch (e) { /* ignore */ }
+    }
+
+    function applyFabPosition(fab, left, top) {
+        fab.style.left   = left + 'px';
+        fab.style.top    = top + 'px';
+        fab.style.right  = 'auto';
+        fab.style.bottom = 'auto';
+    }
+
+    function clampFabToViewport(fab) {
+        const rect = fab.getBoundingClientRect();
+        const maxLeft = Math.max(4, window.innerWidth  - rect.width  - 4);
+        const maxTop  = Math.max(4, window.innerHeight - rect.height - 4);
+        const left = Math.min(Math.max(4, rect.left), maxLeft);
+        const top  = Math.min(Math.max(4, rect.top),  maxTop);
+        applyFabPosition(fab, left, top);
+        saveFabPosition({ left, top });
+    }
+
+    function makeFabDraggable(fab) {
+        let isDragging = false;
+        let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+        const DRAG_THRESHOLD = 4;
+
+        function onPointerMove(e) {
+            const p = e.touches ? e.touches[0] : e;
+            const dx = p.clientX - startX;
+            const dy = p.clientY - startY;
+
+            if (!isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+                isDragging = true;
+                fab.dataset.dragged = '1';
+                fab.classList.add('qa-fab-dragging');
+            }
+
+            if (isDragging) {
+                if (e.cancelable) e.preventDefault();
+                const rect = fab.getBoundingClientRect();
+                const maxLeft = Math.max(4, window.innerWidth  - rect.width  - 4);
+                const maxTop  = Math.max(4, window.innerHeight - rect.height - 4);
+                const newLeft = Math.min(Math.max(4, origLeft + dx), maxLeft);
+                const newTop  = Math.min(Math.max(4, origTop  + dy), maxTop);
+                applyFabPosition(fab, newLeft, newTop);
+            }
+        }
+
+        function onPointerUp() {
+            document.removeEventListener('mousemove', onPointerMove);
+            document.removeEventListener('mouseup', onPointerUp);
+            document.removeEventListener('touchmove', onPointerMove);
+            document.removeEventListener('touchend', onPointerUp);
+            fab.classList.remove('qa-fab-dragging');
+
+            if (isDragging) {
+                const rect = fab.getBoundingClientRect();
+                saveFabPosition({ left: rect.left, top: rect.top });
+            }
+        }
+
+        function onPointerDown(e) {
+            if (fab.disabled) return;
+            isDragging = false;
+            fab.dataset.dragged = '0';
+            const p = e.touches ? e.touches[0] : e;
+            startX = p.clientX;
+            startY = p.clientY;
+            const rect = fab.getBoundingClientRect();
+            origLeft = rect.left;
+            origTop  = rect.top;
+
+            document.addEventListener('mousemove', onPointerMove);
+            document.addEventListener('mouseup', onPointerUp);
+            document.addEventListener('touchmove', onPointerMove, { passive: false });
+            document.addEventListener('touchend', onPointerUp);
+        }
+
+        fab.addEventListener('mousedown', onPointerDown);
+        fab.addEventListener('touchstart', onPointerDown, { passive: true });
+    }
+
     function addFab() {
         const table = document.getElementById('quickedittable');
         const fab   = document.createElement('button');
@@ -2034,8 +2199,30 @@
         fab.innerHTML = (table ? 'Extract Data' : 'No Table Found')
             + `<span class="qa-version-chip">v${TOOLKIT_VERSION}</span>`;
         fab.disabled = !table;
-        fab.onclick  = openModal;
         document.body.appendChild(fab);
+
+        // Restore a previously dragged position; otherwise CSS default (bottom-left) applies.
+        const saved = loadFabPosition();
+        if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+            applyFabPosition(fab, saved.left, saved.top);
+            clampFabToViewport(fab);
+        }
+
+        makeFabDraggable(fab);
+
+        fab.addEventListener('click', (e) => {
+            if (fab.dataset.dragged === '1') {
+                fab.dataset.dragged = '0';
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            openModal();
+        });
+
+        window.addEventListener('resize', () => {
+            if (fab.style.left) clampFabToViewport(fab);
+        });
     }
 
     /* ============================================================

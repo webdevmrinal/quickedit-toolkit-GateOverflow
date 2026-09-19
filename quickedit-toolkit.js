@@ -1,11 +1,11 @@
-// @toolkit-version 8.3
+// @toolkit-version 8.4
 // GATE Overflow Quickedit Toolkit — Remote Payload
 // Fetched & executed by the Loader userscript. Not meant to be installed directly in Tampermonkey.
 
 (function () {
     'use strict';
 
-    const TOOLKIT_VERSION = '8.3';
+    const TOOLKIT_VERSION = '8.4';
 
     /* ============================================================
        STATE
@@ -186,6 +186,11 @@
     }
     #qa-toolbar-right { margin-left: auto; display: flex; gap: 6px; align-self: center; }
 
+    #qa-fr-count {
+        font-size: 12px; font-weight: 700; color: var(--qa-blue);
+        padding: 4px 2px; min-width: 60px;
+    }
+
     #qa-modal-body {
         flex: 1; overflow: auto; padding: 16px 18px;
         background: var(--qa-bg); position: relative;
@@ -283,6 +288,11 @@
     .qa-card-label { color: var(--qa-text-secondary); min-width: 58px; font-weight: 500; padding-top: 5px; }
     .qa-card-value { color: var(--qa-text); word-break: break-word; flex: 1; }
     .qa-card-static { padding-top: 5px; }
+
+    .qa-postid-link {
+        color: var(--qa-blue); text-decoration: none; font-weight: 600;
+    }
+    .qa-postid-link:hover { text-decoration: underline; color: var(--qa-blue-hover); }
 
     .qa-edit-input {
         width: 100%; box-sizing: border-box; border: 1px solid transparent;
@@ -498,6 +508,9 @@
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
     }
+    function escapeAttr(str) {
+        return escapeHtml(str).replace(/"/g, '&quot;');
+    }
     function escapeRegExp(str) {
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
@@ -526,6 +539,11 @@
             else if (state.itemStatus[i] === 'failed') failed++;
         }
         return { total, success, failed, remaining: total - success - failed };
+    }
+
+    /* Builds the direct post URL for a given postID (used for the clickable Post ID link). */
+    function buildPostUrl(postID) {
+        return `https://gateoverflow.in/${encodeURIComponent(postID)}`;
     }
 
     /* ============================================================
@@ -805,9 +823,18 @@
             try {
                 const cells = table.rows[i].cells;
                 const postID        = cells[1].innerText.trim();
+
+                // Answer column may legitimately be empty (no answer input value) — default to ''.
+                let answer = '';
+                try {
+                    if (cells[2] && cells[2].firstChild && cells[2].firstChild.firstChild) {
+                        answer = cells[2].firstChild.firstChild.value || '';
+                    }
+                } catch (e) { answer = ''; }
+
                 const questionTitle = cells[3].lastChild.firstChild.value;
                 const tag           = cells[5].firstChild.firstChild.value;
-                list.push({ postID, questionTitle, tag });
+                list.push({ postID, answer, questionTitle, tag });
             } catch (e) {
                 console.warn('Skipping row', i, e);
             }
@@ -828,7 +855,7 @@
         const data = state.working;
         if (!data.length) {
             return `<p style="color:var(--qa-text-secondary);text-align:center;padding:40px 0;">
-                No data. Click "Extract Data" after selecting a tag on the page.
+                No data. Click "Extract Data" after selecting a tag on the page, or upload a JSON file.
             </p>`;
         }
 
@@ -854,7 +881,18 @@
                 </div>
                 <div class="qa-card-row">
                     <span class="qa-card-label">Post ID</span>
-                    <span class="qa-card-value qa-card-static">${escapeHtml(item.postID)}</span>
+                    <span class="qa-card-value qa-card-static">
+                        <a class="qa-postid-link" href="${escapeAttr(buildPostUrl(item.postID))}" target="_blank" rel="noopener noreferrer" title="Open this post in a new tab">${escapeHtml(item.postID)}</a>
+                    </span>
+                </div>
+                <div class="qa-card-row">
+                    <span class="qa-card-label">Answer</span>
+                    <span class="qa-card-value">
+                        <input class="qa-edit-input" type="text"
+                            data-field="answer" data-idx="${idx}"
+                            placeholder="(no answer)"
+                            value="${escapeHtml(item.answer || '')}" ${disabledAttr}>
+                    </span>
                 </div>
                 <div class="qa-card-row">
                     <span class="qa-card-label">Title</span>
@@ -905,7 +943,8 @@
                             <select id="qa-fr-field">
                                 <option value="questionTitle">Title</option>
                                 <option value="tag">Tag</option>
-                                <option value="both">Both</option>
+                                <option value="answer">Answer</option>
+                                <option value="both">Both (Title+Tag)</option>
                             </select>
                         </div>
                         <div class="qa-field-stack">
@@ -922,6 +961,10 @@
                         </div>
                         <div class="qa-checkbox-wrap">
                             <input type="checkbox" id="qa-fr-regex"> Regex
+                        </div>
+                        <div class="qa-field-stack">
+                            <label>Matches</label>
+                            <span id="qa-fr-count">0</span>
                         </div>
                         <button class="qa-btn-sm" id="qa-fr-apply">Replace All</button>
                     </div>
@@ -949,6 +992,8 @@
                     </div>
 
                     <div id="qa-toolbar-right">
+                        <button class="qa-btn-sm qa-secondary" id="qa-upload-json-btn">📤 Upload JSON</button>
+                        <input type="file" id="qa-upload-json-file" accept="application/json,.json" style="display:none">
                         <button class="qa-btn-sm qa-secondary" id="qa-undo-btn">↩ Undo</button>
                         <button class="qa-btn-sm qa-secondary" id="qa-reset-data">Reset to Original</button>
                     </div>
@@ -1403,6 +1448,59 @@
         `;
     }
 
+    /* ---- Find & Replace live match counter ---- */
+    function computeFindMatchCount() {
+        if (!overlayEl) return 0;
+        const fieldEl = q('#qa-fr-field');
+        const findEl  = q('#qa-fr-find');
+        const regexEl = q('#qa-fr-regex');
+        if (!fieldEl || !findEl || !regexEl) return 0;
+
+        const field    = fieldEl.value;
+        const find     = findEl.value;
+        const useRegex = regexEl.checked;
+
+        if (!find) return 0;
+
+        let matcher = null;
+        if (useRegex) {
+            try { matcher = new RegExp(find, 'g'); }
+            catch (e) { return null; } // invalid regex
+        }
+
+        let count = 0;
+        const countIn = (str) => {
+            if (typeof str !== 'string' || !str) return;
+            if (useRegex) {
+                const m = str.match(matcher);
+                if (m) count += m.length;
+            } else {
+                if (str.includes(find)) count += str.split(find).length - 1;
+            }
+        };
+
+        state.working.forEach(item => {
+            if (field === 'questionTitle' || field === 'both') countIn(item.questionTitle);
+            if (field === 'tag'           || field === 'both') countIn(item.tag);
+            if (field === 'answer') countIn(item.answer);
+        });
+
+        return count;
+    }
+
+    function updateFindReplaceCount() {
+        const el = q('#qa-fr-count');
+        if (!el) return;
+        const count = computeFindMatchCount();
+        if (count === null) {
+            el.textContent = 'invalid regex';
+            el.style.color = 'var(--qa-red)';
+        } else {
+            el.textContent = String(count);
+            el.style.color = count > 0 ? 'var(--qa-blue)' : 'var(--qa-text-secondary)';
+        }
+    }
+
     function renderAll() {
         q('#qa-cards-container').innerHTML = renderCards();
         renderLockBar();
@@ -1414,6 +1512,7 @@
         q('#qa-undo-btn').disabled = state.history.length === 0;
         q('#qa-undo-btn').style.opacity = state.history.length === 0 ? '0.5' : '1';
         updateProgressUI();
+        updateFindReplaceCount();
     }
 
     function switchTab(tabName) {
@@ -1521,6 +1620,11 @@
         });
 
         /* Find & Replace */
+        const frRecount = () => updateFindReplaceCount();
+        q('#qa-fr-field').addEventListener('change', frRecount);
+        q('#qa-fr-find').addEventListener('input', frRecount);
+        q('#qa-fr-regex').addEventListener('change', frRecount);
+
         q('#qa-fr-apply').onclick = () => {
             const field      = q('#qa-fr-field').value;
             const find       = q('#qa-fr-find').value;
@@ -1541,6 +1645,7 @@
 
             pushHistory();
             const changedIndices = [];
+            let totalMatches = 0;
 
             state.working.forEach((item, idx) => {
                 let itemChanged = false;
@@ -1550,11 +1655,14 @@
                     if (useRegex) {
                         result = str.replace(matcher, () => {
                             didMatch = true;
+                            totalMatches++;
                             return useAutoNumber ? replaceRaw.replace('{{n}}', counter) : replaceRaw;
                         });
                     } else {
                         if (str.includes(find)) {
                             didMatch = true;
+                            const occurrences = str.split(find).length - 1;
+                            totalMatches += occurrences;
                             const rep = useAutoNumber ? replaceRaw.replace('{{n}}', counter) : replaceRaw;
                             result = str.split(find).join(rep);
                         } else {
@@ -1567,6 +1675,7 @@
 
                 if (field === 'questionTitle' || field === 'both') item.questionTitle = applyTo(item.questionTitle);
                 if (field === 'tag'           || field === 'both') item.tag           = applyTo(item.tag);
+                if (field === 'answer') item.answer = applyTo(item.answer);
 
                 if (itemChanged) {
                     changedIndices.push(idx);
@@ -1581,7 +1690,7 @@
 
             renderAll();
             flashCards(changedIndices);
-            showToast(`✅ Updated ${changedIndices.length} record${changedIndices.length !== 1 ? 's' : ''}.`);
+            showToast(`✅ Updated ${changedIndices.length} record${changedIndices.length !== 1 ? 's' : ''} — ${totalMatches} total match${totalMatches !== 1 ? 'es' : ''} replaced.`);
         };
 
         /* Range slice */
@@ -1728,6 +1837,62 @@
             resetRenumberState(true);
             renderAll();
             showToast('Reset to original extracted data.');
+        };
+
+        /* Upload manual JSON */
+        q('#qa-upload-json-btn').onclick = () => {
+            q('#qa-upload-json-file').click();
+        };
+
+        q('#qa-upload-json-file').onchange = (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                try {
+                    const parsed = JSON.parse(evt.target.result);
+                    if (!Array.isArray(parsed)) throw new Error('JSON root must be an array of records.');
+                    if (!parsed.length) throw new Error('JSON array is empty.');
+
+                    const normalized = parsed.map((item, i) => {
+                        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                            throw new Error(`Item at index ${i} is not a valid object.`);
+                        }
+                        if (item.postID === undefined || item.postID === null || item.postID === '') {
+                            throw new Error(`Item at index ${i} is missing a "postID" field.`);
+                        }
+                        return {
+                            postID: String(item.postID),
+                            answer: item.answer != null ? String(item.answer) : '',
+                            questionTitle: item.questionTitle != null ? String(item.questionTitle) : '',
+                            tag: item.tag != null ? String(item.tag) : '',
+                        };
+                    });
+
+                    if (!confirm(`Load ${normalized.length} record(s) from "${file.name}"? This will replace the current working data (you can Undo afterwards).`)) {
+                        e.target.value = '';
+                        return;
+                    }
+
+                    pushHistory();
+                    state.working       = normalized;
+                    state.itemStatus    = {};
+                    state.lockNonFailed = false;
+                    resetRenumberState(true);
+                    renderAll();
+                    showToast(`✅ Loaded ${normalized.length} record(s) from JSON.`);
+                } catch (err) {
+                    showToast('⚠️ Invalid JSON: ' + err.message);
+                } finally {
+                    e.target.value = '';
+                }
+            };
+            reader.onerror = () => {
+                showToast('⚠️ Could not read the selected file.');
+                e.target.value = '';
+            };
+            reader.readAsText(file);
         };
 
         /* Copy JSON */

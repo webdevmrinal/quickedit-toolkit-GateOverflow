@@ -17,6 +17,8 @@
         itemStatus: {},
         lockNonFailed: false,
         hasCompletedRun: false,
+        runStartTime: null,
+        runCompletedItems: 0,
         isRunning: false,
         isPaused: false,
         stopRequested: false,
@@ -1045,6 +1047,12 @@
                                     <span id="qa-progress-text">0 / 0 (0%)</span>
                                     <span id="qa-progress-status">Idle</span>
                                 </div>
+                                <div class="qa-progress-meta" style="justify-content: center; font-size: 11.5px; margin-top: 1px;">
+                                    <span id="qa-progress-eta"></span>
+                                </div>
+                                <div class="qa-progress-meta" style="justify-content: center; font-size: 11px; color: #d97706; text-align: center; margin-top: 1px;">
+                                    <span>⚠️ Keep this tab open and in focus to prevent the browser from suspending and slowing down the run.</span>
+                                </div>
                             </div>
 
                             <div class="qa-stat-row">
@@ -1107,7 +1115,7 @@
                                 </div>
                                 <div class="qa-field-stack">
                                     <label>User ID *</label>
-                                    <input type="text" id="qa-hide-userid" placeholder="e.g. 181161">
+                                    <input type="text" id="qa-hide-userid" value="181161" placeholder="e.g. 181161">
                                 </div>
                                 <div class="qa-field-stack">
                                     <label>Count *</label>
@@ -1120,6 +1128,10 @@
                                 <div class="qa-hide-checkbox-row">
                                     <input type="checkbox" id="qa-hide-onlyhideqns" checked>
                                     Only hide questions (recommended)
+                                </div>
+                                <div class="qa-hide-checkbox-row">
+                                    <input type="checkbox" id="qa-hide-hideqns" checked>
+                                    Hide question in Q&A
                                 </div>
                             </div>
 
@@ -1390,10 +1402,11 @@
         q('#qa-hide-title').value    = saved.title    || '';
         q('#qa-hide-category').value = saved.category ?? 0;
         q('#qa-hide-tag').value      = saved.tag      ?? 0;
-        q('#qa-hide-userid').value   = saved.userid   || tryDetectUserId() || '';
+        q('#qa-hide-userid').value   = saved.userid   || tryDetectUserId() || '181161';
         q('#qa-hide-count').value    = saved.count    ?? (state.working.length || 60);
         q('#qa-hide-start').value    = saved.start    ?? 1;
         q('#qa-hide-onlyhideqns').checked = saved.onlyhideqns !== false;
+        q('#qa-hide-hideqns').checked     = saved.hideqns !== false;
         populateHideTagOptions(false);
         renderHideResult(undefined, true);
     }
@@ -1932,6 +1945,7 @@
                 count:        parseInt(q('#qa-hide-count').value,    10) || 0,
                 start:        parseInt(q('#qa-hide-start').value,    10) || 1,
                 onlyhideqns:  q('#qa-hide-onlyhideqns').checked,
+                hideqns:      q('#qa-hide-hideqns').checked,
             };
 
             if (!payload.tagname) return showToast('⚠️ Select a tag name first.');
@@ -2041,6 +2055,24 @@
         if (b) b.classList.add('qa-hidden');
     }
 
+    function formatETA(ms) {
+        if (!isFinite(ms) || ms < 0) return '';
+        const totalSecs = Math.floor(ms / 1000);
+        const h = Math.floor(totalSecs / 3600);
+        const m = Math.floor((totalSecs % 3600) / 60);
+        const s = totalSecs % 60;
+        
+        let parts = [];
+        if (h > 0) parts.push(`${h} hrs`);
+        if (m > 0 || h > 0) parts.push(`${m} mins`);
+        parts.push(`${s} secs`);
+        
+        const finishTime = new Date(Date.now() + ms);
+        const timeString = finishTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        
+        return `estimated time completion (${parts.join(', ')}) | finishing by ${timeString}`;
+    }
+
     function updateProgressUI() {
         if (!overlayEl) return;
         const { total, success, failed, remaining } = computeStats();
@@ -2051,6 +2083,24 @@
         q('#qa-stat-success').textContent   = success;
         q('#qa-stat-failed').textContent    = failed;
         q('#qa-stat-remaining').textContent = remaining;
+
+        const etaEl = q('#qa-progress-eta');
+        if (etaEl) {
+            if (state.isRunning && !state.isPaused && state.runCompletedItems > 0 && remaining > 0) {
+                const elapsedMs = Date.now() - state.runStartTime;
+                const msPerItem = elapsedMs / state.runCompletedItems;
+                const remainingMs = remaining * msPerItem;
+                etaEl.textContent = formatETA(remainingMs);
+            } else if (!state.isRunning) {
+                etaEl.textContent = '';
+            } else if (state.isPaused) {
+                etaEl.textContent = 'Paused';
+            } else if (remaining === 0) {
+                etaEl.textContent = '';
+            } else {
+                etaEl.textContent = 'calculating ETA...';
+            }
+        }
     }
 
     function updateRunButtons() {
@@ -2107,6 +2157,8 @@
     async function runLoop() {
         state.isRunning     = true;
         state.stopRequested = false;
+        state.runStartTime  = Date.now();
+        state.runCompletedItems = 0;
         updateRunButtons();
         hideBanner();
 
@@ -2140,6 +2192,7 @@
 
             const overallOk = qRes.ok && tRes.ok;
             state.itemStatus[idx] = overallOk ? 'success' : 'failed';
+            state.runCompletedItems++;
 
             if (overallOk) {
                 state.consecutiveFailures     = 0;
@@ -2210,8 +2263,13 @@
 
     function onPauseResume() {
         state.isPaused = !state.isPaused;
+        if (!state.isPaused) {
+            state.runStartTime = Date.now();
+            state.runCompletedItems = 0;
+        }
         appendLog(state.isPaused ? '⏸ Paused.' : '▶ Resumed.', 'warn');
         updateRunButtons();
+        updateProgressUI();
     }
 
     function onStopRun() {
@@ -2246,6 +2304,7 @@
         formData.append('count',       String(payload.count));
         formData.append('start',       String(payload.start));
         formData.append('onlyhideqns', payload.onlyhideqns ? '1' : '0');
+        formData.append('hideqns',     payload.hideqns ? '1' : '0');
 
         const emptyFile = new File([], '', { type: 'application/octet-stream' });
         formData.append('file',          emptyFile);

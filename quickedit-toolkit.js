@@ -1,4 +1,4 @@
-// @toolkit-version 9.0
+// @toolkit-version 9.0.2
 // GATE Overflow Quickedit Toolkit — Remote Payload
 // Fetched & executed by the Loader userscript. Not meant to be installed directly in Tampermonkey.
 // For direct installation use quickedit-toolkit-v9.0.user.js instead.
@@ -9,7 +9,7 @@
 (function () {
     'use strict';
 
-    const TOOLKIT_VERSION = '9.0.1';
+    const TOOLKIT_VERSION = '9.0.2';
 
     /* ============================================================
        STATE

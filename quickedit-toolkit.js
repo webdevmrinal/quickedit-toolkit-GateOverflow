@@ -9,7 +9,7 @@
 (function () {
     'use strict';
 
-    const TOOLKIT_VERSION = '9.0';
+    const TOOLKIT_VERSION = '9.0.1';
 
     /* ============================================================
        STATE
@@ -79,7 +79,7 @@
     }
 
     #qa-extract-fab {
-        position: fixed; bottom: 28px; left: 28px; z-index: 999998;
+        position: fixed; bottom: 28px; left: 28px; z-index: 1000000;
         background: var(--qa-blue); color: #fff; border: none; border-radius: 980px;
         padding: 14px 22px; font-size: 15px; font-weight: 600; font-family: var(--qa-font);
         box-shadow: 0 4px 14px rgba(0,0,0,0.18); cursor: grab;
@@ -116,7 +116,7 @@
     #qa-modal-overlay {
         position: fixed; inset: 0; background: rgba(0,0,0,0.35);
         backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-        z-index: 999999; display: flex; align-items: center; justify-content: center;
+        z-index: 1000000; display: flex; align-items: center; justify-content: center;
         opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
         font-family: var(--qa-font);
     }
@@ -341,7 +341,7 @@
         position: absolute; top: 12px; left: 50%; transform: translate(-50%, -20px);
         background: #1d1d1f; color: #fff; padding: 9px 16px; border-radius: 980px;
         font-size: 12.5px; font-weight: 500; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
-        opacity: 0; pointer-events: none; transition: all 0.25s ease; z-index: 10;
+        opacity: 0; pointer-events: none; transition: all 0.25s ease; z-index: 1000000;
         max-width: 80%; text-align: center;
     }
     #qa-toast.qa-show { opacity: 1; transform: translate(-50%, 0); }
